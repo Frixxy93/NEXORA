@@ -1,0 +1,34 @@
+[package]
+name = "nexora-core"
+description = "NEXORA engine: asset database, settings, ID system, map-type registry."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "nexora_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Bundled SQLite so no system libsqlite3 is required. FTS5 enabled for search.
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+regex = "1"
+rand = "0.8"
+# Image decode + thumbnailing. exr/hdr added for VFX float formats; the common
+# LDR formats (png/jpeg/tiff/tga/bmp/webp) are on by default.
+image = { version = "0.25", default-features = true, features = ["exr", "hdr"] }
+# Fast content hashing for duplicate detection (spec §27).
+blake3 = "1"
+# Recursive folder import (spec §7).
+walkdir = "2"
+# Local Bridge API HTTP server (spec §40/§41) — small, blocking, no async runtime.
+tiny_http = "0.12"
+
+[dev-dependencies]
+tempfile = "3"
+# HTTP client for bridge tests.
+ureq = { version = "2", features = ["json"] }

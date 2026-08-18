@@ -1,0 +1,20 @@
+# Cargo workspace root for NEXORA.
+# The pure-Rust engine lives in `core` (renderer/DB/asset logic, fully testable
+# without a GUI). The desktop shell in `src-tauri` is a thin layer that exposes
+# core over Tauri IPC. Future crates (renderers, api, updater) join here.
+[workspace]
+resolver = "2"
+members = ["core", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["FRIXXY"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

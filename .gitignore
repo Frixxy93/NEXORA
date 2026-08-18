@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+*.local
+
+# Rust / Tauri
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# NEXORA local library & cache (never commit user assets)
+/NEXORA_LIBRARY/
+*.db
+*.db-shm
+*.db-wal
+
+# Local scratch (files staged for manual deletion)
+_to_delete/
+
+# CMake build output for the C++ Maya plug-in
+plugins/maya/cpp/build*/

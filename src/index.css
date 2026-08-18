@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-900 text-slate-200 font-sans antialiased;
+    margin: 0;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* Slim, dark scrollbars to match the shelf aesthetic. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-ink-700 rounded;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-600;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .nav-item {
+    @apply flex items-center gap-2.5 px-3 py-1.5 rounded-md text-sm text-slate-400
+           cursor-default transition-colors hover:bg-ink-750 hover:text-slate-200;
+  }
+  .nav-item.active {
+    @apply bg-ink-750 text-white;
+  }
+  .nav-group-label {
+    @apply px-3 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted;
+  }
+  .panel {
+    @apply bg-ink-850 border border-line rounded-xl;
+  }
+  .btn {
+    @apply px-3.5 py-2 rounded-lg text-sm font-medium transition-colors cursor-default;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-ink-900 hover:bg-accent-soft;
+  }
+  .btn-ghost {
+    @apply btn bg-ink-750 text-slate-200 hover:bg-ink-700;
+  }
+  .field-label {
+    @apply text-xs font-medium text-muted mb-1.5;
+  }
+  .input {
+    @apply w-full bg-ink-900 border border-line rounded-lg px-3 py-2 text-sm
+           text-slate-200 outline-none focus:border-accent-dim;
+  }
+}
