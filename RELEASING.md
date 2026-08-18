@@ -15,13 +15,13 @@ This file is the one-time setup plus the per-release checklist.
   **and** a detached signature (`.sig`) for each target.
 - On launch (and from **Settings ▸ Updates ▸ Check for updates**) the app calls
   the updater endpoint:
-  `https://github.com/FRIXXY/NEXORA/releases/latest/download/latest.json`
+  `https://github.com/Frixxy93/NEXORA/releases/latest/download/latest.json`
 - `latest.json` lists the newest version, per-platform download URLs, and the
   signature. The app verifies that signature against the **public key** baked
   into `tauri.conf.json` before installing. No valid signature → no install.
 
 > Update the `endpoints` URL in `tauri.conf.json` if your repo isn't
-> `FRIXXY/NEXORA`.
+> `Frixxy93/NEXORA`.
 
 ---
 
@@ -44,7 +44,7 @@ This prints (and saves) two things:
 ```json
 "plugins": {
   "updater": {
-    "endpoints": ["https://github.com/FRIXXY/NEXORA/releases/latest/download/latest.json"],
+    "endpoints": ["https://github.com/Frixxy93/NEXORA/releases/latest/download/latest.json"],
     "pubkey": "PASTE_THE_PUBLIC_KEY_HERE"
   }
 }
@@ -83,7 +83,7 @@ release" until you replace it and cut a real release.)
      "platforms": {
        "windows-x86_64": {
          "signature": "<contents of the .sig file>",
-         "url": "https://github.com/FRIXXY/NEXORA/releases/download/v0.2.0/NEXORA_0.2.0_x64-setup.nsis.zip"
+         "url": "https://github.com/Frixxy93/NEXORA/releases/download/v0.2.0/NEXORA_0.2.0_x64-setup.nsis.zip"
        }
      }
    }

@@ -45,7 +45,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/FRIXXY/NEXORA/releases/latest/download/latest.json"
+        "https://github.com/Frixxy93/NEXORA/releases/latest/download/latest.json"
       ],
       "pubkey": "REPLACE_WITH_TAURI_SIGNER_PUBLIC_KEY"
     }
