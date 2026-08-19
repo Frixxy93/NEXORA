@@ -43,9 +43,19 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build the installer (updater artifacts off for CI)
+      # Turn off updater artifacts just for this CI build by editing the config
+      # in the disposable checkout (avoids fragile command-line JSON quoting).
+      - name: Disable updater artifacts for CI build
         shell: pwsh
-        run: npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        run: |
+          $p = "src-tauri/tauri.conf.json"
+          $j = Get-Content $p -Raw | ConvertFrom-Json
+          $j.bundle.createUpdaterArtifacts = $false
+          $j | ConvertTo-Json -Depth 100 | Set-Content $p -Encoding utf8
+          Write-Host "createUpdaterArtifacts -> false for this CI build"
+
+      - name: Build the installer
+        run: npm run app:build
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
