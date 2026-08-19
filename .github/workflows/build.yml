@@ -22,6 +22,11 @@ permissions:
 jobs:
   windows-installer:
     runs-on: windows-latest
+    env:
+      # Throwaway password for the per-run updater key. Not a secret: this key is
+      # generated fresh each run and only signs the auto-update blob of a
+      # CI-built artifact that never gets published as a release.
+      SIGN_PW: nexora-ci
     steps:
       - uses: actions/checkout@v4
 
@@ -44,14 +49,14 @@ jobs:
 
       - name: Generate a throwaway updater signing key
         shell: pwsh
-        run: npm run tauri -- signer generate --write-keys "$env:RUNNER_TEMP\nexora.key" --password ""
+        run: npm run tauri -- signer generate --write-keys "$env:RUNNER_TEMP\nexora.key" --password "$env:SIGN_PW" --force
 
       - name: Build the installer
         run: npm run app:build
         env:
           # Tauri accepts a path to the key file here (not just its contents).
           TAURI_SIGNING_PRIVATE_KEY: ${{ runner.temp }}\nexora.key
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.SIGN_PW }}
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
