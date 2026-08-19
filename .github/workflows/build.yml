@@ -1,12 +1,13 @@
-# Build the NEXORA Windows installer (.exe) on every push / on demand.
+# Build the NEXORA Windows installer (.exe / .msi) on every push / on demand.
 #
-# Unlike release.yml (which needs a version tag + your real signing secrets),
-# this just produces a downloadable installer you can grab from the run's
-# "Artifacts" section — no tags, no secrets, no GitHub Release.
+# Produces a downloadable installer in the run's "Artifacts" section — no tags,
+# no secrets, no GitHub Release.
 #
-# Because tauri.conf.json enables updater artifacts, `tauri build` requires a
-# signing key. We mint a throwaway one per run (it only signs the auto-update
-# blob, never the installer), so the build works with zero setup.
+# Updater artifacts are disabled here: creating them needs your real signing key
+# and a valid pubkey in tauri.conf.json (still the placeholder). Real,
+# auto-updating releases are cut by release.yml. The installer this produces
+# works fully; the installed app just won't self-update until you do a signed
+# release.
 
 name: build
 
@@ -22,11 +23,6 @@ permissions:
 jobs:
   windows-installer:
     runs-on: windows-latest
-    env:
-      # Throwaway password for the per-run updater key. Not a secret: this key is
-      # generated fresh each run and only signs the auto-update blob of a
-      # CI-built artifact that never gets published as a release.
-      SIGN_PW: nexora-ci
     steps:
       - uses: actions/checkout@v4
 
@@ -47,16 +43,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Generate a throwaway updater signing key
+      - name: Build the installer (updater artifacts off for CI)
         shell: pwsh
-        run: npm run tauri -- signer generate --write-keys "$env:RUNNER_TEMP\nexora.key" --password "$env:SIGN_PW" --force
-
-      - name: Build the installer
-        run: npm run app:build
-        env:
-          # Tauri accepts a path to the key file here (not just its contents).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ runner.temp }}\nexora.key
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.SIGN_PW }}
+        run: npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
