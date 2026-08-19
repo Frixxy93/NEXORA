@@ -18,6 +18,7 @@ import type {
   MaterialMapDto,
   MayaStatus,
   MixedAssets,
+  PluginInstallResult,
   SearchResults,
   TagDto,
   TextureDto,
@@ -459,6 +460,11 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
         connected: false,
         maya_version: null,
       } as unknown as T;
+    case "install_maya_plugin":
+      return {
+        installed: ["Maya 2026", "Maya 2027"],
+        skipped: [],
+      } as unknown as T;
     case "remove_asset": {
       const id = String(args?.id);
       const ti = mockTextures.findIndex((t) => t.id === id);
@@ -549,6 +555,7 @@ export const api = {
   sendToMaya: (id: string, kind: "material" | "texture") =>
     call<void>("send_to_maya", { id, kind }),
   getBridgeInfo: () => call<BridgeInfo>("get_bridge_info"),
+  installMayaPlugin: () => call<PluginInstallResult>("install_maya_plugin"),
 };
 
 // ===========================================================================

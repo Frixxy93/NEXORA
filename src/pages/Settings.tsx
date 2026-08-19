@@ -16,6 +16,8 @@ export function Settings() {
   const [busy, setBusy] = useState(false);
   const [bridge, setBridge] = useState<BridgeInfo | null>(null);
   const [showToken, setShowToken] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [pluginMsg, setPluginMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api.getSettings().then(setSettings).catch(console.error);
@@ -48,6 +50,25 @@ export function Settings() {
       console.error(err);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const installPlugin = async () => {
+    setInstalling(true);
+    setPluginMsg(null);
+    try {
+      const r = await api.installMayaPlugin();
+      if (r.installed.length) {
+        setPluginMsg(
+          `Installed into ${r.installed.join(", ")}. Enable “nexora_bridge.py” in Maya’s Plug-in Manager.`,
+        );
+      } else {
+        setPluginMsg(`Couldn’t install: ${r.skipped.join("; ") || "no Maya folders found."}`);
+      }
+    } catch (err) {
+      setPluginMsg(String(err));
+    } finally {
+      setInstalling(false);
     }
   };
 
@@ -229,8 +250,22 @@ export function Settings() {
           </div>
         </Field>
 
+        <div className="border-t border-line pt-3">
+          <div className="flex items-center gap-3">
+            <button className="btn-ghost whitespace-nowrap" onClick={installPlugin} disabled={installing}>
+              {installing ? "Installing…" : "Install plug-in into Maya"}
+            </button>
+            <span className="text-[11px] text-muted">
+              Copies the plug-in into your Maya 2026 &amp; 2027 <span className="font-mono">plug-ins</span> folders.
+            </span>
+          </div>
+          {pluginMsg && (
+            <div className="text-[11px] text-slate-300 mt-2 leading-relaxed">{pluginMsg}</div>
+          )}
+        </div>
+
         <div className="text-[11px] text-muted leading-relaxed border-t border-line pt-3">
-          Install the plug-in from{" "}
+          Prefer to do it manually? Copy{" "}
           <span className="font-mono text-slate-300">plugins/maya/nexora_bridge.py</span> into your
           Maya <span className="font-mono text-slate-300">plug-ins</span> folder and enable it in the
           Plug-in Manager. NEXORA auto-writes the connection to{" "}

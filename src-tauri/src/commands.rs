@@ -17,7 +17,7 @@ use nexora_core::texture::{self, ImportOptions, ImportOutcome, TextureDto, Textu
 use crate::state::Db;
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Map any core error into a user-facing string for IPC.
 fn e<E: std::fmt::Display>(err: E) -> String {
@@ -211,6 +211,59 @@ pub fn get_bridge_info(state: State<AppState>) -> BridgeInfo {
         connected: link.connected(),
         maya_version: link.version.clone(),
     }
+}
+
+/// Result of installing the Maya plug-in from within the app.
+#[derive(Serialize)]
+pub struct PluginInstallResult {
+    /// Human-readable targets the plug-in was written to (e.g. "Maya 2026").
+    pub installed: Vec<String>,
+    /// Targets that couldn't be written, with the reason.
+    pub skipped: Vec<String>,
+}
+
+/// Install (or repair) the Maya plug-in into the user's Maya plug-ins folders.
+///
+/// Copies the bundled `nexora_bridge.py` into
+/// `Documents/maya/<version>/plug-ins/` for the Maya versions we target (2026 &
+/// 2027). This is the same drop the installer does, exposed as a one-click
+/// action so the plug-in can be (re)installed without re-running the installer.
+/// After running it, enable "nexora_bridge.py" in Maya's Plug-in Manager.
+#[tauri::command]
+pub fn install_maya_plugin(app: AppHandle) -> Result<PluginInstallResult, String> {
+    // The Python plug-in is shipped as a bundled resource (see tauri.conf.json).
+    let src = app
+        .path()
+        .resolve(
+            "maya-plugin/nexora_bridge.py",
+            tauri::path::BaseDirectory::Resource,
+        )
+        .map_err(e)?;
+    if !src.exists() {
+        return Err(format!(
+            "Bundled Maya plug-in not found at {}. This action works in an installed build of NEXORA.",
+            src.display()
+        ));
+    }
+
+    let docs = app
+        .path()
+        .document_dir()
+        .map_err(|_| "Could not locate your Documents folder.".to_string())?;
+
+    let mut installed = Vec::new();
+    let mut skipped = Vec::new();
+    for ver in ["2026", "2027"] {
+        let dest_dir = docs.join("maya").join(ver).join("plug-ins");
+        match std::fs::create_dir_all(&dest_dir)
+            .and_then(|_| std::fs::copy(&src, dest_dir.join("nexora_bridge.py")))
+        {
+            Ok(_) => installed.push(format!("Maya {ver}")),
+            Err(err) => skipped.push(format!("Maya {ver}: {err}")),
+        }
+    }
+
+    Ok(PluginInstallResult { installed, skipped })
 }
 
 // ===========================================================================

@@ -40,6 +40,11 @@ export interface AppSettings {
   updates: UpdateSettings;
 }
 
+export interface PluginInstallResult {
+  installed: string[];
+  skipped: string[];
+}
+
 export interface LibraryStats {
   materials: number;
   textures: number;

@@ -122,6 +122,7 @@ pub fn run() {
             commands::remove_asset,
             commands::send_to_maya,
             commands::get_bridge_info,
+            commands::install_maya_plugin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXORA");
