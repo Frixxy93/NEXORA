@@ -1,0 +1,63 @@
+# Build the NEXORA Windows installer (.exe) on every push / on demand.
+#
+# Unlike release.yml (which needs a version tag + your real signing secrets),
+# this just produces a downloadable installer you can grab from the run's
+# "Artifacts" section — no tags, no secrets, no GitHub Release.
+#
+# Because tauri.conf.json enables updater artifacts, `tauri build` requires a
+# signing key. We mint a throwaway one per run (it only signs the auto-update
+# blob, never the installer), so the build works with zero setup.
+
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Generate a throwaway updater signing key
+        shell: pwsh
+        run: npm run tauri -- signer generate --write-keys "$env:RUNNER_TEMP\nexora.key" --password ""
+
+      - name: Build the installer
+        run: npm run app:build
+        env:
+          # Tauri accepts a path to the key file here (not just its contents).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ runner.temp }}\nexora.key
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXORA-windows-installer
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
