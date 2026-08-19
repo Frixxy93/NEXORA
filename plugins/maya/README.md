@@ -18,6 +18,13 @@ shaders back into NEXORA.
 
 ## Install
 
+**Easiest:** run the NEXORA desktop installer (`.exe`). It copies this plug-in
+into your Maya **2026** and **2027** `plug-ins` folders automatically — just
+enable it in Maya's Plug-in Manager afterwards. (If you built a compiled `.mll`
+and placed it under `plugins/maya/prebuilt/<version>/`, the installer installs
+that too.) The manual steps below are only needed if you're not using the
+installer.
+
 1. Copy `nexora_bridge.py` into a Maya plug-in path, e.g.
    - Windows: `Documents\maya\<version>\plug-ins\`
    - macOS: `~/Library/Preferences/Autodesk/maya/<version>/plug-ins/`
