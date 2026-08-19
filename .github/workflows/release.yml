@@ -1,0 +1,70 @@
+# Build, sign, and publish a NEXORA release with updater artifacts.
+#
+# Trigger: push a version tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`),
+# or run manually from the Actions tab. tauri-action builds the app per-OS,
+# signs the updater bundles, generates `latest.json`, and attaches everything to
+# a GitHub Release — which is exactly what the in-app auto-updater reads.
+#
+# Required repo secrets (Settings ▸ Secrets and variables ▸ Actions):
+#   TAURI_SIGNING_PRIVATE_KEY           — contents of your ~/.nexora-updater.key
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — the password you set when generating it
+# GITHUB_TOKEN is provided automatically. See RELEASING.md for key generation.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is NEXORA's primary target. Add `macos-latest` / `ubuntu-22.04`
+        # here to ship those platforms too (tauri-action handles each).
+        include:
+          - platform: windows-latest
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Linux-only system deps (only runs if you add an ubuntu platform above).
+      - name: Install Linux dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build, sign, and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "NEXORA ${{ github.ref_name }}"
+          releaseBody: "See the assets below to download and install. The app auto-updates from this release."
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

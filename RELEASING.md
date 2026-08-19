@@ -104,14 +104,30 @@ release" until you replace it and cut a real release.)
 
 ---
 
-## Automating it (optional)
+## Automating it (already wired)
 
-The [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action)
-GitHub Action builds per-OS, signs (reading the key from repo secrets
-`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), generates
-`latest.json`, and attaches everything to the release — so a pushed tag ships an
-update to every platform. Add the secrets under **Settings ▸ Secrets and
-variables ▸ Actions** and never store the private key in the repo.
+`.github/workflows/release.yml` does steps 2–4 for you with
+[`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action): on a
+pushed `v*` tag it builds, signs (reading the key from repo secrets), generates
+`latest.json`, and attaches everything to a **draft** GitHub Release. So the
+whole per-release flow becomes:
+
+```powershell
+# one-time: add the two secrets in the repo, then per release:
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+Then open the draft release GitHub created, confirm the assets (installer,
+`.sig`, `latest.json`), and publish it. To enable it:
+
+1. Add the secrets under **Settings ▸ Secrets and variables ▸ Actions**:
+   `TAURI_SIGNING_PRIVATE_KEY` (contents of `~/.nexora-updater.key`) and
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never commit the private key.
+2. Keep the `pubkey` in `tauri.conf.json` in sync with that private key.
+
+The workflow ships Windows by default; add `macos-latest` / `ubuntu-22.04` to the
+matrix in `release.yml` to build those too.
 
 ---
 
