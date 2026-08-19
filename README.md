@@ -3,89 +3,114 @@
 **Material & Texture Storage for 3D Artists** — _Store. Organize. Preview. Use._
 
 NEXORA is a local-first desktop app for storing, organizing, searching, previewing,
-and applying textures and materials for 3D production, with a real Maya bridge
-(later phase). This repository is the **Phase 1 foundation**: a runnable Tauri 2 +
-React + Rust + SQLite application shell.
+and applying textures and materials for 3D production — with a real Maya bridge so
+you can push materials straight into a scene and capture existing shaders back into
+your library. Your files stay as normal files on disk; NEXORA indexes them.
+
+<p align="center"><em>Tauri 2 · React · Rust · SQLite · three.js</em></p>
 
 ---
 
-## What's in this scaffold (Phase 1)
+## Download & install
 
-| Area | Status |
-| --- | --- |
-| Tauri 2 desktop shell (Rust) | ✅ window, app-data DB, IPC commands |
-| React + TypeScript + Tailwind UI | ✅ dark theme, full sidebar nav, Home, Library shell, Settings |
-| SQLite database + migrations | ✅ full v1 schema (17 tables + FTS5), versioned migrations |
-| Settings (library, appearance, import, renderer, updates) | ✅ typed, persisted, editable in UI |
-| Library configuration (managed / referenced) | ✅ folder picker + skeleton creation |
-| Asset ID system (`NX-TEX-81D4-9B22`) | ✅ immutable IDs, never filename-based |
-| Map-type recognition registry | ✅ configurable registry + matcher (wired to import in Phase 2) |
-| Import / scanning / previews / Maya bridge | ⏳ later phases (see below) |
+Grab the latest Windows installer from the
+[**Releases**](https://github.com/Frixxy93/NEXORA/releases/latest) page and run the
+`.exe`. It installs NEXORA **and** drops the Maya plug-in into your Maya 2026 & 2027
+`plug-ins` folders — then just enable `nexora_bridge.py` in Maya's Plug-in Manager.
 
-Everything above the dashed line in the roadmap is intentionally **not** built yet —
-Phase 1 is the skeleton the rest hangs on.
+The app **auto-updates**: new releases are delivered and installed from within the
+app (Settings ▸ Updates ▸ Check for updates), verified against a signing key.
+
+## Features
+
+- **One library for textures *and* materials.** Individual maps and complete
+  materials are both first-class assets; a texture can live on its own or belong to
+  a material. Stable IDs (`NX-TEX-81D4-9B22`), never filename-based.
+- **Smart import.** Drag in files or folders — NEXORA detects map types
+  (base color, roughness, normal, height…), groups **texture sets** by base name,
+  and collapses **UDIM** tiles into one asset with missing-tile detection.
+- **Live previews.** Real-time WebGL/PBR material preview (three.js) plus per-map
+  thumbnails.
+- **Find anything.** Full-text search, favorites, tags, collections, duplicate
+  detection, recent-added / recently-used, and a library health view.
+- **Maya bridge.** Send any material or texture straight into Maya, browse your
+  library from Maya's NEXORA menu, and **capture** an existing Maya shader's textures
+  back into NEXORA as a new material.
+- **First-class renderer adapters.** Materials build correct shader networks for
+  **Arnold** (`aiStandardSurface`, `aiNormalMap`/`aiBump2d`), **V-Ray** (`VRayMtl`),
+  and generic PBR (`standardSurface`) — honoring your renderer preference, with UDIM
+  wiring. Renderer logic is kept in dedicated adapters, not scattered.
+- **Signed auto-update** from GitHub Releases.
+
+## The Maya plug-in
+
+Two variants live in [`plugins/maya/`](plugins/maya):
+
+- **`nexora_bridge.py`** — a Python (API 2.0) scripted plug-in that loads on Maya
+  2022+ (verified on 2026 & 2027), no compilation needed. This is what the installer
+  ships and what the in-app **Settings ▸ Maya Bridge ▸ Install plug-in into Maya**
+  button installs/repairs.
+- **`cpp/`** — a compiled C++ `.mll` build of the same bridge, for a native binary
+  plug-in. Build once per Maya version against that version's devkit
+  (see [`plugins/maya/cpp/README.md`](plugins/maya/cpp/README.md)); drop the result
+  in [`plugins/maya/prebuilt/`](plugins/maya/prebuilt) to have the installer bundle it too.
+
+The plug-in connects over a localhost, token-authenticated Bridge API. NEXORA writes
+`~/.nexora/bridge.json` on startup, so the plug-in auto-connects — no manual config.
 
 ## Architecture
 
 ```
 NEXORA/
 ├── src/                # React + TS frontend (UI only; talks to Rust over IPC)
-│   ├── lib/            # api bridge (+ browser mock), types, nav model
-│   ├── components/     # Sidebar, TopBar, StatCard, Icon, EmptyState
-│   └── pages/          # Home, Library, Settings
-├── src-tauri/          # Tauri desktop shell (thin) — commands, state, config
-├── core/               # nexora-core: the engine (DB, settings, IDs, map registry)
-│                       #   → pure Rust, fully unit-tested, no GUI/Maya deps
-└── scripts/            # icon generation
+│   ├── lib/            # api bridge (+ browser mock), updater, types
+│   ├── components/     # Sidebar, TopBar, previews, cards
+│   └── pages/          # Home, Library, Search, Settings
+├── src-tauri/          # Tauri desktop shell (thin) — commands, state, config, NSIS hook
+├── core/               # nexora-core: the engine — DB, import, materials, library,
+│                       #   bridge server. Pure Rust, headless-testable, no GUI deps.
+├── plugins/maya/       # Maya plug-ins: nexora_bridge.py + compiled cpp/ + prebuilt/
+└── .github/workflows/  # build.yml (installer artifact) · release.yml (signed release)
 ```
 
-The important boundary: **all logic lives in `core`** so it can be tested headless.
-`src-tauri` only locks state, calls core, and maps errors for IPC. Future crates
-(renderers, api server, updater, Maya bridge) join the Cargo workspace beside `core`.
+The key boundary: **all logic lives in `core`** so it can be unit-tested without a
+GUI or Maya. `src-tauri` just locks state, calls core, and maps errors for IPC. The
+frontend `api` layer has an in-memory **browser mock**, so `npm run dev` renders the
+full UI in a plain browser with no Rust toolchain — handy for UI work.
 
-The frontend `api` layer includes an in-memory **browser mock**, so `npm run dev`
-renders the full UI in a plain browser without the Rust toolchain — handy for UI work.
+## Build from source
 
-## Prerequisites
-
-- **Node.js** 18+ and npm
-- **Rust** (stable) — https://rustup.rs
-- **Tauri 2 system deps** — on Windows: the *WebView2 runtime* (preinstalled on
-  Win 11) and *Microsoft C++ Build Tools*. See
-  https://v2.tauri.app/start/prerequisites/
-
-## Run it
+Prerequisites: **Node 18+**, **Rust (stable)**, and Tauri 2 system deps (on Windows:
+the WebView2 runtime + Microsoft C++ Build Tools — see
+<https://v2.tauri.app/start/prerequisites/>).
 
 ```bash
-npm install          # install frontend deps
+npm install          # frontend deps
 npm run app:dev      # launch the desktop app (Tauri) with hot reload
+npm run dev          # UI-only preview in a browser (mock backend, no Rust)
+npm run app:build    # build the installer  → target/release/bundle
 ```
 
-UI-only preview in a browser (no Rust needed):
+Tests:
 
 ```bash
-npm run dev          # http://localhost:1420  (uses the mock backend)
+cargo test -p nexora-core   # engine tests: schema, import, sets/UDIM, materials, library, bridge
+npm run build               # strict typecheck + production frontend build
 ```
 
-Build a distributable:
+## Releasing
 
-```bash
-npm run app:build    # produces an installer in src-tauri/target/release/bundle
-```
+Releases are built, signed, and published by GitHub Actions. Bump the version, then
+`git tag vX.Y.Z && git push origin vX.Y.Z` — the `release` workflow builds the
+installer, signs the update, generates `latest.json`, and publishes it as the latest
+release so installed apps update themselves. Full details (signing keys, secrets) are
+in [`RELEASING.md`](RELEASING.md).
 
-## Test
+## Status
 
-```bash
-cargo test -p nexora-core   # 12 engine tests: schema, migrations, FTS, IDs, map registry, settings
-npm run build               # typecheck (strict) + production frontend build
-```
-
-## Roadmap (from the product spec)
-
-Phase 1 **Foundation** ✅ · Phase 2 Texture Storage + Import · Phase 3 Texture Sets ·
-Phase 4 Material Storage · Phase 5 Library (search/filters/tags/collections/health) ·
-Phase 6 Preview Engine · Phase 7 Maya Bridge · Phase 8 V-Ray · Phase 9 Arnold ·
-Phase 10 Maya Capture · Phase 11 Auto-update (GitHub Releases).
+All build phases are complete: library, import, texture sets & UDIM, materials,
+search/tags/collections/health, WebGL previews, the Maya bridge, V-Ray and Arnold
+adapters, Maya shader capture, and signed GitHub auto-update.
 
 ## License
 
