@@ -1,38 +1,35 @@
-# Build, sign, and publish a NEXORA release with updater artifacts.
+# Publish a downloadable NEXORA installer to the GitHub *Releases* page.
 #
-# Trigger: push a version tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`),
-# or run manually from the Actions tab. tauri-action builds the app per-OS,
-# signs the updater bundles, generates `latest.json`, and attaches everything to
-# a GitHub Release — which is exactly what the in-app auto-updater reads.
+# Trigger it either way:
+#   • push a tag:        git tag v0.1.0 && git push origin v0.1.0
+#   • or the Actions tab → "release" → Run workflow → type a tag (e.g. v0.1.0)
 #
-# Required repo secrets (Settings ▸ Secrets and variables ▸ Actions):
-#   TAURI_SIGNING_PRIVATE_KEY           — contents of your ~/.nexora-updater.key
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  — the password you set when generating it
-# GITHUB_TOKEN is provided automatically. See RELEASING.md for key generation.
+# Builds the Windows installer and attaches the .exe + .msi to a GitHub Release,
+# so anyone can download it from the Releases page (no login needed).
+#
+# Updater artifacts are left OFF here — signing them needs your private key and a
+# real pubkey in tauri.conf.json. The installer works fully; the installed app
+# just won't auto-update until you set up signing (see RELEASING.md). Once you
+# do, flip createUpdaterArtifacts back on and add the two signing secrets.
 
 name: release
 
 on:
   push:
-    tags:
-      - "v*"
-  workflow_dispatch: {}
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.1.0"
+        required: true
+        default: "v0.1.0"
 
 permissions:
   contents: write
 
 jobs:
   release:
-    strategy:
-      fail-fast: false
-      matrix:
-        # Windows is NEXORA's primary target. Add `macos-latest` / `ubuntu-22.04`
-        # here to ship those platforms too (tauri-action handles each).
-        include:
-          - platform: windows-latest
-            args: ""
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -45,26 +42,42 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # Linux-only system deps (only runs if you add an ubuntu platform above).
-      - name: Install Linux dependencies
-        if: startsWith(matrix.platform, 'ubuntu')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
 
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build, sign, and publish
-        uses: tauri-apps/tauri-action@v0
+      - name: Disable updater artifacts (no signing key in CI yet)
+        shell: pwsh
+        run: |
+          $p = "src-tauri/tauri.conf.json"
+          $j = Get-Content $p -Raw | ConvertFrom-Json
+          $j.bundle.createUpdaterArtifacts = $false
+          $j | ConvertTo-Json -Depth 100 | Set-Content $p -Encoding utf8
+
+      - name: Build the installer
+        run: npm run app:build
+
+      - name: Publish GitHub Release with the installer
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "NEXORA ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install. The app auto-updates from this release."
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          $files = @()
+          $files += (Get-ChildItem target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue).FullName
+          $files += (Get-ChildItem target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue).FullName
+          $files = @($files | Where-Object { $_ })
+          Write-Host "Publishing $($files.Count) file(s) to release $env:TAG"
+          gh release view "$env:TAG" --repo "${{ github.repository }}" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "$env:TAG" $files --repo "${{ github.repository }}" --clobber
+          } else {
+            gh release create "$env:TAG" $files `
+              --repo "${{ github.repository }}" `
+              --title "NEXORA $env:TAG" `
+              --notes "Windows installer — run the .exe to install NEXORA plus the Maya plug-in (Maya 2026 & 2027)."
+          }
