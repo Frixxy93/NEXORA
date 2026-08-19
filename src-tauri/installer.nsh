@@ -24,14 +24,14 @@
   ; --- Maya 2026 ---
   CreateDirectory "$DOCUMENTS\maya\2026\plug-ins"
   CopyFiles /SILENT "$R0\nexora_bridge.py" "$DOCUMENTS\maya\2026\plug-ins\nexora_bridge.py"
-  IfFileExists "$R0\prebuilt\2026\nexora_bridge.mll" 0 +2
-    CopyFiles /SILENT "$R0\prebuilt\2026\nexora_bridge.mll" "$DOCUMENTS\maya\2026\plug-ins\nexora_bridge.mll"
+  IfFileExists "$R0\2026\nexora_bridge.mll" 0 +2
+    CopyFiles /SILENT "$R0\2026\nexora_bridge.mll" "$DOCUMENTS\maya\2026\plug-ins\nexora_bridge.mll"
 
   ; --- Maya 2027 ---
   CreateDirectory "$DOCUMENTS\maya\2027\plug-ins"
   CopyFiles /SILENT "$R0\nexora_bridge.py" "$DOCUMENTS\maya\2027\plug-ins\nexora_bridge.py"
-  IfFileExists "$R0\prebuilt\2027\nexora_bridge.mll" 0 +2
-    CopyFiles /SILENT "$R0\prebuilt\2027\nexora_bridge.mll" "$DOCUMENTS\maya\2027\plug-ins\nexora_bridge.mll"
+  IfFileExists "$R0\2027\nexora_bridge.mll" 0 +2
+    CopyFiles /SILENT "$R0\2027\nexora_bridge.mll" "$DOCUMENTS\maya\2027\plug-ins\nexora_bridge.mll"
 
   nexora_plugin_done:
 !macroend
