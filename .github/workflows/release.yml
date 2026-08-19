@@ -1,27 +1,13 @@
 # Publish a SIGNED, self-updating NEXORA release to the GitHub Releases page.
 #
-# This is the real auto-update path: it builds the installer, signs the updater
-# bundle with your private key, generates `latest.json`, and publishes a Release
-# with the installer + signature + latest.json attached. Installed apps read
-# `releases/latest/download/latest.json` from this repo and update themselves.
+# Builds + signs the installer with `tauri build`, assembles latest.json from the
+# generated .sig, then publishes with `gh release create --latest` (guaranteed
+# NOT a draft, always marked "latest" — so releases/latest/download/latest.json
+# resolves). Requires repo secrets TAURI_SIGNING_PRIVATE_KEY + _PASSWORD and the
+# matching pubkey in tauri.conf.json (see RELEASING.md).
 #
-# ── ONE-TIME SETUP (required — without it this workflow fails) ──────────────────
-#   1. Generate a signing key on your machine:
-#        npm run tauri signer generate -- -w "$HOME/.nexora-updater.key"
-#      (enter a password when prompted; remember it)
-#   2. Put the PUBLIC key (printed, also in ~/.nexora-updater.key.pub) into
-#      src-tauri/tauri.conf.json -> plugins.updater.pubkey
-#      (replace REPLACE_WITH_TAURI_SIGNER_PUBLIC_KEY), then commit + push.
-#   3. Add two repo secrets (Settings > Secrets and variables > Actions):
-#        TAURI_SIGNING_PRIVATE_KEY           = full contents of ~/.nexora-updater.key
-#        TAURI_SIGNING_PRIVATE_KEY_PASSWORD  = the password from step 1
-# ───────────────────────────────────────────────────────────────────────────────
-#
-# Trigger:  git tag v0.1.1 && git push origin v0.1.1
-#      or:  Actions > release > Run workflow > type a tag.
-#
-# (Quick unsigned installer builds — no setup — still come from build.yml as an
-# Actions artifact. This workflow is only for signed, auto-updating releases.)
+# Trigger: git tag vX.Y.Z && git push origin vX.Y.Z
+#     or:  Actions > release > Run workflow > type the tag.
 
 name: release
 
@@ -31,9 +17,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, e.g. v0.1.1"
+        description: "Release tag, e.g. v0.1.3"
         required: true
-        default: "v0.1.1"
+        default: "v0.1.3"
 
 permissions:
   contents: write
@@ -41,6 +27,8 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    env:
+      TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -61,15 +49,40 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build, sign, and publish the release
-        uses: tauri-apps/tauri-action@v0
+      - name: Build + sign the installer
+        run: npm run app:build
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
-          releaseName: "NEXORA ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}"
-          releaseBody: "Windows installer — run the .exe to install NEXORA plus the Maya plug-in (Maya 2026 & 2027). Installed apps auto-update from this release."
-          releaseDraft: false
-          prerelease: false
+
+      - name: Assemble latest.json and publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $bundle = "target/release/bundle"
+          $exe = Get-ChildItem "$bundle/nsis/*-setup.exe" | Select-Object -First 1
+          $sig = Get-ChildItem "$bundle/nsis/*-setup.exe.sig" | Select-Object -First 1
+          if (-not $exe -or -not $sig) { throw "installer or signature not found under $bundle/nsis" }
+          $sigText = (Get-Content $sig.FullName -Raw).Trim()
+          $url = "https://github.com/${{ github.repository }}/releases/download/$env:TAG/$($exe.Name)"
+          $manifest = [ordered]@{
+            version   = $ver
+            notes     = "NEXORA $env:TAG"
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{ signature = $sigText; url = $url }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content -Path "$bundle/latest.json" -Encoding utf8
+
+          $assets = @($exe.FullName, $sig.FullName, "$bundle/latest.json")
+          $msi    = Get-ChildItem "$bundle/msi/*.msi"     -ErrorAction SilentlyContinue | Select-Object -First 1
+          $msiSig = Get-ChildItem "$bundle/msi/*.msi.sig" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msi)    { $assets += $msi.FullName }
+          if ($msiSig) { $assets += $msiSig.FullName }
+
+          gh release delete "$env:TAG" --yes 2>$null
+          $global:LASTEXITCODE = 0
+          gh release create "$env:TAG" $assets --repo "${{ github.repository }}" --title "NEXORA $env:TAG" --notes "Windows installer - run the .exe to install NEXORA plus the Maya plug-in (Maya 2026 & 2027). Installed apps auto-update from this release." --latest
