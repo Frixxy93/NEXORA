@@ -1,16 +1,27 @@
-# Publish a downloadable NEXORA installer to the GitHub *Releases* page.
+# Publish a SIGNED, self-updating NEXORA release to the GitHub Releases page.
 #
-# Trigger it either way:
-#   • push a tag:        git tag v0.1.0 && git push origin v0.1.0
-#   • or the Actions tab → "release" → Run workflow → type a tag (e.g. v0.1.0)
+# This is the real auto-update path: it builds the installer, signs the updater
+# bundle with your private key, generates `latest.json`, and publishes a Release
+# with the installer + signature + latest.json attached. Installed apps read
+# `releases/latest/download/latest.json` from this repo and update themselves.
 #
-# Builds the Windows installer and attaches the .exe + .msi to a GitHub Release,
-# so anyone can download it from the Releases page (no login needed).
+# ── ONE-TIME SETUP (required — without it this workflow fails) ──────────────────
+#   1. Generate a signing key on your machine:
+#        npm run tauri signer generate -- -w "$HOME/.nexora-updater.key"
+#      (enter a password when prompted; remember it)
+#   2. Put the PUBLIC key (printed, also in ~/.nexora-updater.key.pub) into
+#      src-tauri/tauri.conf.json -> plugins.updater.pubkey
+#      (replace REPLACE_WITH_TAURI_SIGNER_PUBLIC_KEY), then commit + push.
+#   3. Add two repo secrets (Settings > Secrets and variables > Actions):
+#        TAURI_SIGNING_PRIVATE_KEY           = full contents of ~/.nexora-updater.key
+#        TAURI_SIGNING_PRIVATE_KEY_PASSWORD  = the password from step 1
+# ───────────────────────────────────────────────────────────────────────────────
 #
-# Updater artifacts are left OFF here — signing them needs your private key and a
-# real pubkey in tauri.conf.json. The installer works fully; the installed app
-# just won't auto-update until you set up signing (see RELEASING.md). Once you
-# do, flip createUpdaterArtifacts back on and add the two signing secrets.
+# Trigger:  git tag v0.1.1 && git push origin v0.1.1
+#      or:  Actions > release > Run workflow > type a tag.
+#
+# (Quick unsigned installer builds — no setup — still come from build.yml as an
+# Actions artifact. This workflow is only for signed, auto-updating releases.)
 
 name: release
 
@@ -20,9 +31,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, e.g. v0.1.0"
+        description: "Release tag, e.g. v0.1.1"
         required: true
-        default: "v0.1.0"
+        default: "v0.1.1"
 
 permissions:
   contents: write
@@ -50,34 +61,15 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Disable updater artifacts (no signing key in CI yet)
-        shell: pwsh
-        run: |
-          $p = "src-tauri/tauri.conf.json"
-          $j = Get-Content $p -Raw | ConvertFrom-Json
-          $j.bundle.createUpdaterArtifacts = $false
-          $j | ConvertTo-Json -Depth 100 | Set-Content $p -Encoding utf8
-
-      - name: Build the installer
-        run: npm run app:build
-
-      - name: Publish GitHub Release with the installer
-        shell: pwsh
+      - name: Build, sign, and publish the release
+        uses: tauri-apps/tauri-action@v0
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
-        run: |
-          $files = @()
-          $files += (Get-ChildItem target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue).FullName
-          $files += (Get-ChildItem target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue).FullName
-          $files = @($files | Where-Object { $_ })
-          Write-Host "Publishing $($files.Count) file(s) to release $env:TAG"
-          gh release view "$env:TAG" --repo "${{ github.repository }}" 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload "$env:TAG" $files --repo "${{ github.repository }}" --clobber
-          } else {
-            gh release create "$env:TAG" $files `
-              --repo "${{ github.repository }}" `
-              --title "NEXORA $env:TAG" `
-              --notes "Windows installer — run the .exe to install NEXORA plus the Maya plug-in (Maya 2026 & 2027)."
-          }
+          GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          releaseName: "NEXORA ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}"
+          releaseBody: "Windows installer — run the .exe to install NEXORA plus the Maya plug-in (Maya 2026 & 2027). Installed apps auto-update from this release."
+          releaseDraft: false
+          prerelease: false
