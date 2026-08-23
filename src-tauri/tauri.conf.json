@@ -42,7 +42,9 @@
     "shortDescription": "Material & texture storage for 3D artists",
     "longDescription": "NEXORA stores, organizes, previews, and applies textures and materials for 3D production, with a real Maya bridge.",
     "resources": {
-      "../plugins/maya/nexora_bridge.py": "maya-plugin/"
+      "../plugins/maya/nexora_bridge.py": "maya-plugin/",
+      "../plugins/maya/prebuilt/2026/nexora_bridge.mll": "maya-mll-2026/",
+      "../plugins/maya/prebuilt/2027/nexora_bridge.mll": "maya-mll-2027/"
     },
     "windows": {
       "nsis": {

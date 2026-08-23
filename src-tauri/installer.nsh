@@ -11,27 +11,40 @@
 ; across Tauri versions, so we probe the known candidates.
 
 !macro NSIS_HOOK_POSTINSTALL
-  ; Find where the bundled plug-in landed.
+  ; Locate the Python plug-in (probe both candidate resource roots).
   StrCpy $R0 ""
   IfFileExists "$INSTDIR\resources\maya-plugin\nexora_bridge.py" 0 +2
     StrCpy $R0 "$INSTDIR\resources\maya-plugin"
   IfFileExists "$INSTDIR\maya-plugin\nexora_bridge.py" 0 +2
     StrCpy $R0 "$INSTDIR\maya-plugin"
 
-  ; If we couldn't locate it, skip quietly rather than fail the install.
+  ; Locate the compiled .mll for each version (optional — only if bundled).
+  StrCpy $R1 ""
+  IfFileExists "$INSTDIR\resources\maya-mll-2026\nexora_bridge.mll" 0 +2
+    StrCpy $R1 "$INSTDIR\resources\maya-mll-2026\nexora_bridge.mll"
+  IfFileExists "$INSTDIR\maya-mll-2026\nexora_bridge.mll" 0 +2
+    StrCpy $R1 "$INSTDIR\maya-mll-2026\nexora_bridge.mll"
+
+  StrCpy $R2 ""
+  IfFileExists "$INSTDIR\resources\maya-mll-2027\nexora_bridge.mll" 0 +2
+    StrCpy $R2 "$INSTDIR\resources\maya-mll-2027\nexora_bridge.mll"
+  IfFileExists "$INSTDIR\maya-mll-2027\nexora_bridge.mll" 0 +2
+    StrCpy $R2 "$INSTDIR\maya-mll-2027\nexora_bridge.mll"
+
+  ; If we couldn't even find the Python plug-in, skip quietly.
   StrCmp $R0 "" nexora_plugin_done
 
   ; --- Maya 2026 ---
   CreateDirectory "$DOCUMENTS\maya\2026\plug-ins"
   CopyFiles /SILENT "$R0\nexora_bridge.py" "$DOCUMENTS\maya\2026\plug-ins\nexora_bridge.py"
-  IfFileExists "$R0\2026\nexora_bridge.mll" 0 +2
-    CopyFiles /SILENT "$R0\2026\nexora_bridge.mll" "$DOCUMENTS\maya\2026\plug-ins\nexora_bridge.mll"
+  StrCmp $R1 "" +2
+    CopyFiles /SILENT "$R1" "$DOCUMENTS\maya\2026\plug-ins\nexora_bridge.mll"
 
   ; --- Maya 2027 ---
   CreateDirectory "$DOCUMENTS\maya\2027\plug-ins"
   CopyFiles /SILENT "$R0\nexora_bridge.py" "$DOCUMENTS\maya\2027\plug-ins\nexora_bridge.py"
-  IfFileExists "$R0\2027\nexora_bridge.mll" 0 +2
-    CopyFiles /SILENT "$R0\2027\nexora_bridge.mll" "$DOCUMENTS\maya\2027\plug-ins\nexora_bridge.mll"
+  StrCmp $R2 "" +2
+    CopyFiles /SILENT "$R2" "$DOCUMENTS\maya\2027\plug-ins\nexora_bridge.mll"
 
   nexora_plugin_done:
 !macroend
