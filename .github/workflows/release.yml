@@ -85,4 +85,4 @@ jobs:
 
           gh release delete "$env:TAG" --yes 2>$null
           $global:LASTEXITCODE = 0
-          gh release create "$env:TAG" $assets --repo "${{ github.repository }}" --title "NEXORA $env:TAG" --notes "Windows installer - run the .exe to install NEXORA plus the Maya plug-in (Maya 2026 & 2027). Installed apps auto-update from this release." --latest
+          gh release create "$env:TAG" $assets --repo "${{ github.repository }}" --title "NEXORA $env:TAG" --notes "Windows installer - run the .exe to install NEXORA plus the Maya plug-in (Maya 2026 & 2027). Installed apps auto-update from this release. Note: Windows may show an unknown-publisher SmartScreen warning (this app is not signed with a paid certificate) - click More info then Run anyway." --latest

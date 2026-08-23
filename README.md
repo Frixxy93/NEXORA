@@ -21,6 +21,13 @@ Grab the latest Windows installer from the
 The app **auto-updates**: new releases are delivered and installed from within the
 app (Settings ▸ Updates ▸ Check for updates), verified against a signing key.
 
+> **Windows SmartScreen note.** NEXORA is a small independent app and its installer
+> isn't code-signed with a paid certificate, so the first time you run it Windows may
+> show a blue **"Windows protected your PC"** screen. This is expected — click
+> **More info**, then **Run anyway**. The warning eases on its own as more people
+> download and run it (SmartScreen builds trust over time). The update package is
+> still cryptographically signed and verified before installing.
+
 ## Features
 
 - **One library for textures *and* materials.** Individual maps and complete
