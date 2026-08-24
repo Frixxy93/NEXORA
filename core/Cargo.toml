@@ -27,6 +27,9 @@ blake3 = "1"
 walkdir = "2"
 # Local Bridge API HTTP server (spec §40/§41) — small, blocking, no async runtime.
 tiny_http = "0.12"
+# Outbound HTTP for the Discover feature (download free CC0 textures). Blocking,
+# rustls TLS, no async runtime — matches the rest of core.
+ureq = { version = "2", features = ["tls"] }
 
 [dev-dependencies]
 tempfile = "3"

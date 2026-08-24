@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
+import { Discover } from "./pages/Discover";
 import { Home } from "./pages/Home";
 import { Library } from "./pages/Library";
 import { SearchView } from "./pages/SearchView";
@@ -96,6 +97,7 @@ export default function App() {
     // A non-empty search query takes over the main area (spec §17).
     if (query.trim()) return <SearchView query={query.trim()} onNavigate={setView} />;
     if (view === "home") return <Home onNavigate={setView} />;
+    if (view === "discover") return <Discover />;
     if (view === "settings") return <Settings />;
     return <Library view={view} onNavigate={setView} key={view} />;
   };

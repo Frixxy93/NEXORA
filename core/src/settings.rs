@@ -78,6 +78,27 @@ pub struct UpdateSettings {
     pub channel: String,
 }
 
+/// "Discover" — auto-download free CC0 textures from online libraries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoverSettings {
+    /// Whether the background auto-sync is enabled.
+    pub auto_sync: bool,
+    /// Download resolution: "1k" | "2k" | "4k".
+    pub resolution: String,
+    /// Pull from the Poly Haven CC0 library.
+    pub source_polyhaven: bool,
+}
+
+impl Default for DiscoverSettings {
+    fn default() -> Self {
+        DiscoverSettings {
+            auto_sync: false,
+            resolution: "1k".into(),
+            source_polyhaven: true,
+        }
+    }
+}
+
 /// The full settings document surfaced to the frontend as one object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -86,6 +107,9 @@ pub struct AppSettings {
     pub appearance: AppearanceSettings,
     pub default_renderer: Renderer,
     pub updates: UpdateSettings,
+    /// Defaulted so settings saved before this field existed still load.
+    #[serde(default)]
+    pub discover: DiscoverSettings,
 }
 
 impl Default for AppSettings {
@@ -115,6 +139,7 @@ impl Default for AppSettings {
                 check_on_startup: true,
                 channel: "stable".into(),
             },
+            discover: DiscoverSettings::default(),
         }
     }
 }

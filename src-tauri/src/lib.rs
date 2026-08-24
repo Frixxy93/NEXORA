@@ -78,6 +78,9 @@ pub fn run() {
                 maya,
                 bridge_token: token,
                 bridge_port: port,
+                discover_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                discover_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                discover_progress: Arc::new(Mutex::new(Default::default())),
             });
             Ok(())
         })
@@ -123,6 +126,9 @@ pub fn run() {
             commands::send_to_maya,
             commands::get_bridge_info,
             commands::install_maya_plugin,
+            commands::start_discover_sync,
+            commands::stop_discover_sync,
+            commands::get_discover_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXORA");

@@ -19,6 +19,7 @@ pub mod library;
 pub mod maptypes;
 pub mod material;
 pub mod models;
+pub mod providers;
 pub mod settings;
 pub mod texture;
 
@@ -44,6 +45,9 @@ pub enum CoreError {
 
     #[error("not found: {0}")]
     NotFound(String),
+
+    #[error("provider error: {0}")]
+    Provider(String),
 }
 
 /// The build version of the core engine, surfaced to the UI and API `/status`.

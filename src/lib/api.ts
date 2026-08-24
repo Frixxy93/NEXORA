@@ -8,6 +8,7 @@ import type {
   AppSettings,
   BridgeInfo,
   CollectionDto,
+  DiscoverStatus,
   DuplicateGroup,
   ImportProgress,
   ImportReport,
@@ -19,6 +20,7 @@ import type {
   MayaStatus,
   MixedAssets,
   PluginInstallResult,
+  SyncProgress,
   SearchResults,
   TagDto,
   TextureDto,
@@ -55,6 +57,7 @@ const defaultSettings = (): AppSettings => ({
   appearance: { theme: "dark", grid_size: 200, preview_quality: 2 },
   default_renderer: "generic_pbr",
   updates: { automatic_updates: true, check_on_startup: true, channel: "stable" },
+  discover: { auto_sync: false, resolution: "1k", source_polyhaven: true },
 });
 
 let mockSettings = defaultSettings();
@@ -64,6 +67,19 @@ const doneListeners = new Set<(r: ImportReport) => void>();
 const progressListeners = new Set<(p: ImportProgress) => void>();
 const libraryChangeListeners = new Set<() => void>();
 const materialImportedListeners = new Set<(name: string) => void>();
+
+// Discover (free-texture sync) mock state, for the browser preview.
+let mockDiscoverRunning = false;
+let mockDiscoverSynced = 0;
+let mockDiscoverProgress: SyncProgress = {
+  running: false, total: 0, done: 0, imported: 0, skipped: 0, failed: 0,
+  current: "", bytes: 0, finished: false, error: null,
+};
+const discoverListeners = new Set<(p: SyncProgress) => void>();
+function fireDiscover(p: SyncProgress) {
+  mockDiscoverProgress = p;
+  discoverListeners.forEach((cb) => cb(p));
+}
 
 // Phase 5 mock stores.
 let mockTagSeq = 1;
@@ -465,6 +481,40 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
         installed: ["Maya 2026", "Maya 2027"],
         skipped: [],
       } as unknown as T;
+    case "start_discover_sync": {
+      if (mockDiscoverRunning) return undefined as unknown as T;
+      mockDiscoverRunning = true;
+      const total = 12;
+      let done = 0;
+      fireDiscover({
+        running: true, total, done: 0, imported: 0, skipped: 0, failed: 0,
+        current: "", bytes: 0, finished: false, error: null,
+      });
+      const iv = window.setInterval(() => {
+        if (!mockDiscoverRunning || done >= total) {
+          window.clearInterval(iv);
+          mockDiscoverRunning = false;
+          fireDiscover({ ...mockDiscoverProgress, running: false, finished: true, current: "" });
+          return;
+        }
+        done += 1;
+        mockDiscoverSynced += 1;
+        fireDiscover({
+          running: true, total, done, imported: done, skipped: 0, failed: 0,
+          current: `sample_texture_${done}`, bytes: done * 4_000_000, finished: false, error: null,
+        });
+      }, 600);
+      return undefined as unknown as T;
+    }
+    case "stop_discover_sync":
+      mockDiscoverRunning = false;
+      return undefined as unknown as T;
+    case "get_discover_status":
+      return {
+        running: mockDiscoverRunning,
+        synced: mockDiscoverSynced,
+        progress: mockDiscoverProgress,
+      } as unknown as T;
     case "remove_asset": {
       const id = String(args?.id);
       const ti = mockTextures.findIndex((t) => t.id === id);
@@ -556,6 +606,11 @@ export const api = {
     call<void>("send_to_maya", { id, kind }),
   getBridgeInfo: () => call<BridgeInfo>("get_bridge_info"),
   installMayaPlugin: () => call<PluginInstallResult>("install_maya_plugin"),
+
+  // Discover — free CC0 texture auto-download
+  startDiscoverSync: () => call<void>("start_discover_sync"),
+  stopDiscoverSync: () => call<void>("stop_discover_sync"),
+  getDiscoverStatus: () => call<DiscoverStatus>("get_discover_status"),
 };
 
 // ===========================================================================
@@ -595,6 +650,16 @@ export async function onMaterialImported(cb: (name: string) => void): Promise<Un
   }
   materialImportedListeners.add(cb);
   return () => materialImportedListeners.delete(cb);
+}
+
+/** Subscribe to Discover (free-texture) sync progress. */
+export async function onDiscoverProgress(cb: (p: SyncProgress) => void): Promise<Unlisten> {
+  if (isTauri) {
+    const { listen } = await import("@tauri-apps/api/event");
+    return listen<SyncProgress>("discover:progress", (e) => cb(e.payload));
+  }
+  discoverListeners.add(cb);
+  return () => discoverListeners.delete(cb);
 }
 
 /** Subscribe to OS file drops onto the window. Returns an unlisten function. */

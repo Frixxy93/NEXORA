@@ -19,7 +19,10 @@ export interface NavGroup {
 
 export const NAV: NavGroup[] = [
   {
-    items: [{ id: "home", label: "Home", icon: "home" }],
+    items: [
+      { id: "home", label: "Home", icon: "home" },
+      { id: "discover", label: "Discover", icon: "download" },
+    ],
   },
   {
     label: "Library",

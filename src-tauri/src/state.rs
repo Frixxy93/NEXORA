@@ -2,7 +2,9 @@
 
 use nexora_core::bridge::{MayaLink, Outbox};
 use nexora_core::db::Database;
+use nexora_core::providers::SyncProgress;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 /// Shared, cloneable handle to the single database.
@@ -24,4 +26,10 @@ pub struct AppState {
     pub bridge_token: String,
     /// The port the Bridge API bound to.
     pub bridge_port: u16,
+    /// Discover (free-texture sync): set to stop a running sync.
+    pub discover_stop: Arc<AtomicBool>,
+    /// True while a Discover sync thread is running (guards double-start).
+    pub discover_running: Arc<AtomicBool>,
+    /// Latest sync progress, read by the status command.
+    pub discover_progress: Arc<Mutex<SyncProgress>>,
 }

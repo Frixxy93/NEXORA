@@ -32,12 +32,38 @@ export interface UpdateSettings {
   channel: string;
 }
 
+export interface DiscoverSettings {
+  auto_sync: boolean;
+  resolution: string; // "1k" | "2k" | "4k"
+  source_polyhaven: boolean;
+}
+
 export interface AppSettings {
   library: LibrarySettings;
   import: ImportSettings;
   appearance: AppearanceSettings;
   default_renderer: Renderer;
   updates: UpdateSettings;
+  discover: DiscoverSettings;
+}
+
+export interface SyncProgress {
+  running: boolean;
+  total: number;
+  done: number;
+  imported: number;
+  skipped: number;
+  failed: number;
+  current: string;
+  bytes: number;
+  finished: boolean;
+  error: string | null;
+}
+
+export interface DiscoverStatus {
+  running: boolean;
+  synced: number;
+  progress: SyncProgress;
 }
 
 export interface PluginInstallResult {

@@ -267,6 +267,107 @@ pub fn install_maya_plugin(app: AppHandle) -> Result<PluginInstallResult, String
 }
 
 // ===========================================================================
+// Discover — auto-download free CC0 textures (Poly Haven)
+// ===========================================================================
+
+/// Status of the Discover free-texture sync.
+#[derive(Serialize)]
+pub struct DiscoverStatus {
+    pub running: bool,
+    /// How many free assets are already imported.
+    pub synced: u64,
+    pub progress: nexora_core::providers::SyncProgress,
+}
+
+/// Start the background auto-sync of free CC0 textures (Poly Haven). Downloads
+/// every catalog texture (skipping ones already imported) at the resolution set
+/// in Settings, importing each as a material. Progress is emitted as
+/// `discover:progress`.
+#[tauri::command]
+pub fn start_discover_sync(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
+    if state.discover_running.swap(true, Ordering::SeqCst) {
+        return Err("A free-texture sync is already running.".into());
+    }
+    state.discover_stop.store(false, Ordering::SeqCst);
+
+    // Read download options from settings up front.
+    let (resolution, generate_preview) = {
+        let guard = state.db.lock().map_err(e)?;
+        let s = AppSettings::load(guard.conn()).map_err(e)?;
+        (s.discover.resolution.clone(), s.import.auto_generate_preview)
+    };
+
+    let db = state.db.clone();
+    let stop = state.discover_stop.clone();
+    let running = state.discover_running.clone();
+    let progress = state.discover_progress.clone();
+    let thumbnail_dir = state.thumbnail_dir.clone();
+    let app = app.clone();
+
+    std::thread::spawn(move || {
+        let opts = nexora_core::providers::SyncOptions {
+            resolution,
+            thumbnail_dir,
+            generate_preview,
+        };
+        let progress_cb = progress.clone();
+        let app_cb = app.clone();
+        let on_progress = move |p: &nexora_core::providers::SyncProgress| {
+            if let Ok(mut g) = progress_cb.lock() {
+                *g = p.clone();
+            }
+            let _ = app_cb.emit("discover:progress", p);
+        };
+
+        let result = nexora_core::providers::run_polyhaven_sync(&db, &opts, &stop, &on_progress);
+
+        if let Err(err) = result {
+            if let Ok(mut g) = progress.lock() {
+                g.running = false;
+                g.finished = true;
+                g.error = Some(err.to_string());
+                let snapshot = g.clone();
+                drop(g);
+                let _ = app.emit("discover:progress", &snapshot);
+            }
+        }
+        running.store(false, Ordering::SeqCst);
+    });
+    Ok(())
+}
+
+/// Ask a running Discover sync to stop after the current asset.
+#[tauri::command]
+pub fn stop_discover_sync(state: State<AppState>) {
+    state
+        .discover_stop
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Current Discover sync status + how many free assets are already imported.
+#[tauri::command]
+pub fn get_discover_status(state: State<AppState>) -> Result<DiscoverStatus, String> {
+    let progress = state
+        .discover_progress
+        .lock()
+        .map_err(e)?
+        .clone();
+    let synced = {
+        let guard = state.db.lock().map_err(e)?;
+        nexora_core::providers::synced_count(guard.conn(), "polyhaven")
+    };
+    Ok(DiscoverStatus {
+        running: state
+            .discover_running
+            .load(std::sync::atomic::Ordering::SeqCst),
+        synced,
+        progress,
+    })
+}
+
+// ===========================================================================
 // Phase 2 — texture import & queries
 // ===========================================================================
 
