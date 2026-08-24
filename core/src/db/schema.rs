@@ -13,7 +13,7 @@
 //! existing DB is safe. Structural changes go through numbered migrations.
 
 /// Current schema version, stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The full v1 schema, applied inside a single transaction.
 pub const SCHEMA_V1: &str = r#"
@@ -210,4 +210,18 @@ CREATE TRIGGER IF NOT EXISTS assets_au AFTER UPDATE ON assets BEGIN
     INSERT INTO assets_fts(rowid, name, category, description, tags)
     VALUES (new.rowid, new.name, COALESCE(new.category,''), COALESCE(new.description,''), '');
 END;
+"#;
+
+/// v2 — renderer availability backfill.
+///
+/// Early builds wrote only a `generic_pbr` preset per material, so the V-Ray and
+/// Arnold library views (which filter on `renderer_presets`) and the inspector
+/// chips were always empty. NEXORA's V-Ray and Arnold adapters build a surface
+/// shader anchored on the base color, so any material with a base color supports
+/// them. Backfill those rows for existing materials. Idempotent via OR IGNORE.
+pub const MIGRATE_V2_RENDERER_PRESETS: &str = r#"
+INSERT OR IGNORE INTO renderer_presets (material_id, renderer, params)
+SELECT DISTINCT material_id, 'vray', NULL FROM material_maps WHERE slot = 'base_color';
+INSERT OR IGNORE INTO renderer_presets (material_id, renderer, params)
+SELECT DISTINCT material_id, 'arnold', NULL FROM material_maps WHERE slot = 'base_color';
 "#;

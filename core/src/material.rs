@@ -100,6 +100,22 @@ fn derive_material_name(dir: &Path) -> String {
         .join(" ")
 }
 
+/// Which renderer adapters can build a shader for a material with these slots.
+///
+/// NEXORA ships three adapters. `generic_pbr` is the always-available baseline.
+/// The dedicated V-Ray (VRayMtl) and Arnold (aiStandardSurface) networks are
+/// anchored on the base color, so they apply to any material that has one — which
+/// is every real PBR material. This is what populates the V-Ray/Arnold library
+/// views and the "Renderers" chips.
+fn supported_renderers(present: &std::collections::HashSet<&str>) -> Vec<&'static str> {
+    let mut renderers = vec!["generic_pbr"];
+    if present.contains("base_color") {
+        renderers.push("vray");
+        renderers.push("arnold");
+    }
+    renderers
+}
+
 /// Width/height/UDIM flag for a texture, for material metadata.
 fn texture_dims(conn: &Connection, texture_id: &str) -> Option<(Option<i64>, Option<i64>, bool)> {
     conn.query_row(
@@ -184,11 +200,15 @@ fn create_material(
             params![id, slot, tex_id],
         )?;
     }
-    // A generic PBR preset always exists; V-Ray/Arnold presets arrive in P8/P9.
-    conn.execute(
-        "INSERT INTO renderer_presets (material_id, renderer, params) VALUES (?1, 'generic_pbr', NULL)",
-        params![id],
-    )?;
+    // Record every renderer this material can be applied in, so the V-Ray/Arnold
+    // library views and the inspector "Renderers" chips reflect reality.
+    for renderer in supported_renderers(&present) {
+        conn.execute(
+            "INSERT OR IGNORE INTO renderer_presets (material_id, renderer, params)
+             VALUES (?1, ?2, NULL)",
+            params![id, renderer],
+        )?;
+    }
 
     Ok(id)
 }
@@ -497,7 +517,11 @@ mod tests {
         assert_eq!(m.resolution.as_deref(), Some("2K"));
         assert_eq!(m.maps.len(), 3);
         assert!(m.missing_maps.contains(&"height".to_string()));
+        // Has a base color → applicable in all three renderer adapters, so the
+        // V-Ray/Arnold library views and inspector chips are populated.
         assert!(m.renderers.contains(&"generic_pbr".to_string()));
+        assert!(m.renderers.contains(&"vray".to_string()));
+        assert!(m.renderers.contains(&"arnold".to_string()));
         assert!(m.preview_texture_id.is_some());
         // health = 3 of 5 expected slots = 60
         assert_eq!(m.health, 60);

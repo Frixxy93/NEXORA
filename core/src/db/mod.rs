@@ -48,10 +48,18 @@ impl Database {
         if current < 1 {
             let tx = conn.transaction()?;
             tx.execute_batch(schema::SCHEMA_V1)?;
-            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            tx.pragma_update(None, "user_version", 1)?;
             tx.commit()?;
         }
-        // Future: `if current < 2 { ... }` numbered migrations.
+        if current < 2 {
+            // Backfill V-Ray/Arnold renderer availability for materials created
+            // before renderer presets recorded them (see schema::MIGRATE_V2).
+            let tx = conn.transaction()?;
+            tx.execute_batch(schema::MIGRATE_V2_RENDERER_PRESETS)?;
+            tx.pragma_update(None, "user_version", 2)?;
+            tx.commit()?;
+        }
+        // Future: `if current < 3 { ... }` numbered migrations.
         Ok(())
     }
 
@@ -130,5 +138,71 @@ mod tests {
         // Reopen: migrate() should be a no-op and not error.
         let db2 = Database::open(&path).unwrap();
         assert_eq!(db2.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v2_backfills_renderer_presets_for_existing_materials() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nexora.db");
+
+        // Simulate a pre-v2 library: a material with a base color that only ever
+        // recorded a generic_pbr preset, and user_version pinned at 1.
+        {
+            let db = Database::open(&path).unwrap();
+            let conn = db.conn();
+            let now = 1_700_000_000i64;
+            conn.execute(
+                "INSERT INTO assets (id, kind, name, created_at, updated_at)
+                 VALUES ('NX-MAT-AAAA-BBBB','material','Old Concrete',?1,?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO assets (id, kind, name, created_at, updated_at)
+                 VALUES ('NX-TEX-CCCC-DDDD','texture','Old Concrete BaseColor',?1,?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO textures (asset_id, file_path, map_type, created_at)
+                 VALUES ('NX-TEX-CCCC-DDDD','/x/basecolor.png','base_color',?1)",
+                [now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO materials (asset_id, is_pbr, is_udim, health, status)
+                 VALUES ('NX-MAT-AAAA-BBBB',1,0,100,'healthy')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO material_maps (material_id, slot, texture_id)
+                 VALUES ('NX-MAT-AAAA-BBBB','base_color','NX-TEX-CCCC-DDDD')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO renderer_presets (material_id, renderer, params)
+                 VALUES ('NX-MAT-AAAA-BBBB','generic_pbr',NULL)",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+        }
+
+        // Reopen → the v2 migration runs and backfills V-Ray + Arnold.
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), SCHEMA_VERSION);
+        let renderers: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM renderer_presets
+                 WHERE material_id = 'NX-MAT-AAAA-BBBB'
+                   AND renderer IN ('vray','arnold')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(renderers, 2, "v2 should backfill vray + arnold presets");
     }
 }
