@@ -30,6 +30,8 @@ tiny_http = "0.12"
 # Outbound HTTP for the Discover feature (download free CC0 textures). Blocking,
 # rustls TLS, no async runtime — matches the rest of core.
 ureq = { version = "2", features = ["tls"] }
+# Unzip ambientCG material bundles (pure-Rust deflate; no C deps).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"

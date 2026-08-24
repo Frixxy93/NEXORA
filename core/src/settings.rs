@@ -78,6 +78,12 @@ pub struct UpdateSettings {
     pub channel: String,
 }
 
+/// Serde default for bool fields that should be `true` when absent from a
+/// settings blob saved before the field existed.
+fn default_true() -> bool {
+    true
+}
+
 /// "Discover" — auto-download free CC0 textures from online libraries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoverSettings {
@@ -87,6 +93,9 @@ pub struct DiscoverSettings {
     pub resolution: String,
     /// Pull from the Poly Haven CC0 library.
     pub source_polyhaven: bool,
+    /// Pull from the ambientCG CC0 library.
+    #[serde(default = "default_true")]
+    pub source_ambientcg: bool,
 }
 
 impl Default for DiscoverSettings {
@@ -95,6 +104,7 @@ impl Default for DiscoverSettings {
             auto_sync: false,
             resolution: "1k".into(),
             source_polyhaven: true,
+            source_ambientcg: true,
         }
     }
 }

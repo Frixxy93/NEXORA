@@ -36,6 +36,7 @@ export interface DiscoverSettings {
   auto_sync: boolean;
   resolution: string; // "1k" | "2k" | "4k"
   source_polyhaven: boolean;
+  source_ambientcg: boolean;
 }
 
 export interface AppSettings {

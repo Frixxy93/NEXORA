@@ -57,7 +57,7 @@ const defaultSettings = (): AppSettings => ({
   appearance: { theme: "dark", grid_size: 200, preview_quality: 2 },
   default_renderer: "generic_pbr",
   updates: { automatic_updates: true, check_on_startup: true, channel: "stable" },
-  discover: { auto_sync: false, resolution: "1k", source_polyhaven: true },
+  discover: { auto_sync: false, resolution: "1k", source_polyhaven: true, source_ambientcg: true },
 });
 
 let mockSettings = defaultSettings();

@@ -267,22 +267,22 @@ pub fn install_maya_plugin(app: AppHandle) -> Result<PluginInstallResult, String
 }
 
 // ===========================================================================
-// Discover — auto-download free CC0 textures (Poly Haven)
+// Discover — auto-download free CC0 textures (Poly Haven + ambientCG)
 // ===========================================================================
 
 /// Status of the Discover free-texture sync.
 #[derive(Serialize)]
 pub struct DiscoverStatus {
     pub running: bool,
-    /// How many free assets are already imported.
+    /// How many free assets are already imported (all sources).
     pub synced: u64,
     pub progress: nexora_core::providers::SyncProgress,
 }
 
-/// Start the background auto-sync of free CC0 textures (Poly Haven). Downloads
-/// every catalog texture (skipping ones already imported) at the resolution set
-/// in Settings, importing each as a material. Progress is emitted as
-/// `discover:progress`.
+/// Start the background auto-sync of free CC0 textures from the enabled sources
+/// (Poly Haven and/or ambientCG). Downloads every catalog texture (skipping ones
+/// already imported) at the resolution set in Settings, importing each as a
+/// material. Progress is emitted as `discover:progress`.
 #[tauri::command]
 pub fn start_discover_sync(app: AppHandle, state: State<AppState>) -> Result<(), String> {
     use std::sync::atomic::Ordering;
@@ -293,10 +293,15 @@ pub fn start_discover_sync(app: AppHandle, state: State<AppState>) -> Result<(),
     state.discover_stop.store(false, Ordering::SeqCst);
 
     // Read download options from settings up front.
-    let (resolution, generate_preview) = {
+    let (resolution, generate_preview, source_polyhaven, source_ambientcg) = {
         let guard = state.db.lock().map_err(e)?;
         let s = AppSettings::load(guard.conn()).map_err(e)?;
-        (s.discover.resolution.clone(), s.import.auto_generate_preview)
+        (
+            s.discover.resolution.clone(),
+            s.import.auto_generate_preview,
+            s.discover.source_polyhaven,
+            s.discover.source_ambientcg,
+        )
     };
 
     let db = state.db.clone();
@@ -311,6 +316,8 @@ pub fn start_discover_sync(app: AppHandle, state: State<AppState>) -> Result<(),
             resolution,
             thumbnail_dir,
             generate_preview,
+            source_polyhaven,
+            source_ambientcg,
         };
         let progress_cb = progress.clone();
         let app_cb = app.clone();
@@ -321,7 +328,7 @@ pub fn start_discover_sync(app: AppHandle, state: State<AppState>) -> Result<(),
             let _ = app_cb.emit("discover:progress", p);
         };
 
-        let result = nexora_core::providers::run_polyhaven_sync(&db, &opts, &stop, &on_progress);
+        let result = nexora_core::providers::run_sync(&db, &opts, &stop, &on_progress);
 
         if let Err(err) = result {
             if let Ok(mut g) = progress.lock() {
@@ -356,7 +363,7 @@ pub fn get_discover_status(state: State<AppState>) -> Result<DiscoverStatus, Str
         .clone();
     let synced = {
         let guard = state.db.lock().map_err(e)?;
-        nexora_core::providers::synced_count(guard.conn(), "polyhaven")
+        nexora_core::providers::synced_count_total(guard.conn())
     };
     Ok(DiscoverStatus {
         running: state

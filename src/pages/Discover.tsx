@@ -66,6 +66,20 @@ export function Discover() {
     }
   };
 
+  const toggleSource = async (key: "source_polyhaven" | "source_ambientcg") => {
+    if (!settings || running) return;
+    const next = structuredClone(settings);
+    next.discover[key] = !next.discover[key];
+    // Never let both sources end up off — keep at least one enabled.
+    if (!next.discover.source_polyhaven && !next.discover.source_ambientcg) return;
+    setSettings(next);
+    try {
+      await api.saveSettings(next);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const start = async () => {
     setError(null);
     try {
@@ -89,27 +103,42 @@ export function Discover() {
 
   return (
     <div className="flex-1 overflow-y-auto px-8 py-7 max-w-3xl">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-white">Discover</h1>
-        <p className="text-sm text-muted mt-1">
-          Auto-download free, public-domain (CC0) PBR textures into your library.
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">Discover</h1>
+          <p className="text-sm text-muted mt-1">
+            Auto-download free, public-domain (CC0) PBR textures into your library.
+          </p>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-2xl font-semibold text-white tabular-nums">{synced}</div>
+          <div className="text-[11px] text-muted">in your library</div>
+        </div>
       </div>
 
-      {/* Source ----------------------------------------------------------- */}
+      {/* Sources ---------------------------------------------------------- */}
       <section className="panel p-5 mb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-100">Poly Haven</h2>
-            <p className="text-xs text-muted mt-0.5">
-              Thousands of CC0 PBR textures — free for any use, no attribution required.
-            </p>
-          </div>
-          <div className="text-right">
-            <div className="text-2xl font-semibold text-white tabular-nums">{synced}</div>
-            <div className="text-[11px] text-muted">in your library</div>
-          </div>
+        <div className="field-label">Sources</div>
+        <div className="space-y-2">
+          <SourceToggle
+            name="Poly Haven"
+            desc="Thousands of CC0 PBR textures — one file per map."
+            enabled={settings?.discover.source_polyhaven ?? true}
+            disabled={running}
+            onToggle={() => toggleSource("source_polyhaven")}
+          />
+          <SourceToggle
+            name="ambientCG"
+            desc="Thousands more CC0 materials — delivered as bundled ZIPs."
+            enabled={settings?.discover.source_ambientcg ?? true}
+            disabled={running}
+            onToggle={() => toggleSource("source_ambientcg")}
+          />
         </div>
+        <p className="text-[11px] text-muted mt-3 leading-relaxed">
+          Both libraries are CC0 (public domain) — free for any use, commercial included, no
+          attribution required.
+        </p>
       </section>
 
       {/* Resolution ------------------------------------------------------- */}
@@ -192,6 +221,50 @@ export function Discover() {
           Materials library and work everywhere in NEXORA — previews, search, Send to Maya.
         </div>
       </section>
+    </div>
+  );
+}
+
+function SourceToggle({
+  name,
+  desc,
+  enabled,
+  disabled,
+  onToggle,
+}: {
+  name: string;
+  desc: string;
+  enabled: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div
+      className={`flex items-center justify-between rounded-lg border px-3 py-2.5 ${
+        enabled ? "border-line bg-ink-900" : "border-line bg-ink-900/40"
+      }`}
+    >
+      <div className="min-w-0">
+        <div className={`text-sm font-medium ${enabled ? "text-slate-100" : "text-muted"}`}>
+          {name}
+        </div>
+        <div className="text-[11px] text-muted mt-0.5 truncate">{desc}</div>
+      </div>
+      <button
+        role="switch"
+        aria-checked={enabled}
+        disabled={disabled}
+        onClick={onToggle}
+        className={`relative ml-4 h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+          enabled ? "bg-accent" : "bg-ink-600"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+            enabled ? "left-[18px]" : "left-0.5"
+          }`}
+        />
+      </button>
     </div>
   );
 }
