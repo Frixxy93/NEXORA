@@ -417,7 +417,7 @@ pub fn import_paths(
     let thumbnail_dir = state.thumbnail_dir.clone();
 
     std::thread::spawn(move || {
-        let report = run_import(&app, &db, thumbnail_dir, paths);
+        let report = run_import(&app, &db, thumbnail_dir, paths, false);
         let _ = app.emit("import:done", &report);
     });
     Ok(())
@@ -429,7 +429,13 @@ pub fn import_paths(
 /// whole batch — and the heavy per-file work (reading + hashing the file) runs
 /// unlocked. This keeps the UI and the Maya bridge responsive during a big
 /// import instead of freezing until it finishes (mirrors the Discover sync).
-fn run_import(app: &AppHandle, db: &Db, thumbnail_dir: PathBuf, paths: Vec<String>) -> ImportReport {
+fn run_import(
+    app: &AppHandle,
+    db: &Db,
+    thumbnail_dir: PathBuf,
+    paths: Vec<String>,
+    quiet: bool,
+) -> ImportReport {
     // Settings under a brief lock, then released for the rest of the import.
     let settings = { AppSettings::load(dblock(db).conn()).unwrap_or_default() };
     let opts = ImportOptions {
@@ -457,14 +463,16 @@ fn run_import(app: &AppHandle, db: &Db, thumbnail_dir: PathBuf, paths: Vec<Strin
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let _ = app.emit(
-            "import:progress",
-            ImportProgress {
-                done: i,
-                total,
-                current,
-            },
-        );
+        if !quiet {
+            let _ = app.emit(
+                "import:progress",
+                ImportProgress {
+                    done: i,
+                    total,
+                    current,
+                },
+            );
+        }
 
         // Analyze OUTSIDE the lock — this reads and hashes the whole file, the
         // single heaviest per-file step.
@@ -500,6 +508,53 @@ fn run_import(app: &AppHandle, db: &Db, thumbnail_dir: PathBuf, paths: Vec<Strin
     }
 
     report
+}
+
+/// Scan the library location for files added outside NEXORA and import the new
+/// ones (existing paths dedup out). Reuses the import pipeline, so it honors
+/// managed/referenced mode, auto-tag, and set grouping — and, like import, locks
+/// the DB only per file so the app stays responsive.
+///
+/// Returns the report (which the caller can surface); `notify` controls whether a
+/// toast is emitted (manual scan: always; auto-scan: only when something new was
+/// found, to stay quiet).
+pub fn scan_once(app: &AppHandle, db: &Db, thumbnail_dir: PathBuf, notify_always: bool) -> ImportReport {
+    let root = {
+        let guard = dblock(db);
+        AppSettings::load(guard.conn())
+            .ok()
+            .and_then(|s| s.library.location)
+    };
+    let Some(root) = root else {
+        return ImportReport { total: 0, imported: 0, duplicates: 0, failed: 0 };
+    };
+    // Auto-scan (notify_always == false) stays silent — no per-file progress toast.
+    let report = run_import(app, db, thumbnail_dir, vec![root], !notify_always);
+    if notify_always || report.imported > 0 {
+        let _ = app.emit("import:done", &report);
+    }
+    if report.imported > 0 {
+        let _ = app.emit("library:changed", ());
+    }
+    report
+}
+
+/// Manually scan the library location for new files (the "Scan now" button).
+#[tauri::command]
+pub fn scan_library(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    if state.scan_running.swap(true, Ordering::SeqCst) {
+        return Err("A library scan is already running.".into());
+    }
+    let db = state.db.clone();
+    let thumbnail_dir = state.thumbnail_dir.clone();
+    let scan_running = state.scan_running.clone();
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        scan_once(&app2, &db, thumbnail_dir, true);
+        scan_running.store(false, Ordering::SeqCst);
+    });
+    Ok(())
 }
 
 /// List textures, newest first, optionally filtered by map-type slug.

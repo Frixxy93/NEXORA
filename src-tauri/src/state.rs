@@ -32,4 +32,7 @@ pub struct AppState {
     pub discover_running: Arc<AtomicBool>,
     /// Latest sync progress, read by the status command.
     pub discover_progress: Arc<Mutex<SyncProgress>>,
+    /// True while a library scan is running (guards overlapping scans from the
+    /// manual "Scan now" and the auto-scan timer).
+    pub scan_running: Arc<AtomicBool>,
 }

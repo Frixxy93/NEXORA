@@ -9,7 +9,9 @@ mod state;
 
 use nexora_core::bridge::{self, BridgeContext, MayaLink};
 use nexora_core::db::Database;
+use nexora_core::settings::AppSettings;
 use state::{AppState, Db};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
@@ -71,6 +73,45 @@ pub fn run() {
             // Publish the port + token so the Maya plug-in can auto-connect.
             write_bridge_config(app, port, &token);
 
+            let scan_running = Arc::new(AtomicBool::new(false));
+
+            // Auto-scan timer: wakes each minute and, when auto-scan is enabled,
+            // scans the library at the configured interval to pick up files added
+            // outside NEXORA. Quiet unless it finds something new.
+            {
+                let app_handle = app.handle().clone();
+                let db_timer = db.clone();
+                let thumb_timer = thumbnail_dir.clone();
+                let scan_flag = scan_running.clone();
+                std::thread::spawn(move || {
+                    let mut elapsed_min: u32 = 0;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                        let settings = {
+                            let guard = db_timer.lock().unwrap_or_else(|p| p.into_inner());
+                            match AppSettings::load(guard.conn()) {
+                                Ok(s) => s,
+                                Err(_) => continue,
+                            }
+                        };
+                        if !settings.library.auto_scan {
+                            elapsed_min = 0;
+                            continue;
+                        }
+                        elapsed_min += 1;
+                        if elapsed_min < settings.library.scan_frequency_minutes.max(1) {
+                            continue;
+                        }
+                        elapsed_min = 0;
+                        if scan_flag.swap(true, Ordering::SeqCst) {
+                            continue; // a scan (manual or prior tick) is already running
+                        }
+                        commands::scan_once(&app_handle, &db_timer, thumb_timer.clone(), false);
+                        scan_flag.store(false, Ordering::SeqCst);
+                    }
+                });
+            }
+
             app.manage(AppState {
                 db,
                 thumbnail_dir,
@@ -78,9 +119,10 @@ pub fn run() {
                 maya,
                 bridge_token: token,
                 bridge_port: port,
-                discover_stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                discover_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                discover_stop: Arc::new(AtomicBool::new(false)),
+                discover_running: Arc::new(AtomicBool::new(false)),
                 discover_progress: Arc::new(Mutex::new(Default::default())),
+                scan_running,
             });
             Ok(())
         })
@@ -137,6 +179,7 @@ pub fn run() {
             commands::add_tag_many,
             commands::add_to_collection_many,
             commands::remove_assets,
+            commands::scan_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXORA");

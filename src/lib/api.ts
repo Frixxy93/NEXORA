@@ -216,6 +216,8 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       return "0.1.0" as unknown as T;
     case "recompute_metadata":
       return undefined as unknown as T;
+    case "scan_library":
+      return undefined as unknown as T;
     case "get_app_settings":
       return mockSettings as unknown as T;
     case "save_app_settings":
@@ -634,6 +636,7 @@ export const api = {
   getTextureSet: (id: string) => call<TextureSetDto | null>("get_texture_set", { id }),
   rebuildTextureSets: () => call<number>("rebuild_texture_sets"),
   recomputeMetadata: () => call<void>("recompute_metadata"),
+  scanLibrary: () => call<void>("scan_library"),
   getUdimInfo: (id: string) => call<UdimInfo>("get_udim_info", { id }),
 
   // Phase 4

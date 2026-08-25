@@ -20,6 +20,7 @@ export function Settings() {
   const [pluginMsg, setPluginMsg] = useState<string | null>(null);
   const [recomputing, setRecomputing] = useState(false);
   const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null);
+  const [scanMsg, setScanMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api.getSettings().then(setSettings).catch(console.error);
@@ -89,6 +90,16 @@ export function Settings() {
     }
   };
 
+  const scanNow = async () => {
+    setScanMsg(null);
+    try {
+      await api.scanLibrary();
+      setScanMsg("Scanning your library for new files… results appear as a toast when it finishes.");
+    } catch (err) {
+      setScanMsg(String(err));
+    }
+  };
+
   const chooseLibrary = async () => {
     const path = await pickFolder();
     if (!path) return;
@@ -150,6 +161,38 @@ export function Settings() {
             />
           </div>
         </Field>
+
+        <Field label="Scan for new files">
+          <div className="flex items-center gap-2">
+            <button className="btn-ghost whitespace-nowrap" onClick={scanNow}>
+              Scan now
+            </button>
+            <span className="text-[11px] text-muted">
+              Imports files added to your library folder outside NEXORA.
+            </span>
+          </div>
+          {scanMsg && <div className="text-[11px] text-muted mt-2">{scanMsg}</div>}
+        </Field>
+
+        <Toggle
+          label="Auto-scan library folder"
+          checked={settings.library.auto_scan}
+          onChange={(v) => update((s) => (s.library.auto_scan = v))}
+        />
+        {settings.library.auto_scan && (
+          <Field label="Scan every">
+            <div className="grid grid-cols-4 gap-2">
+              {[5, 15, 30, 60].map((min) => (
+                <ModeCard
+                  key={min}
+                  active={settings.library.scan_frequency_minutes === min}
+                  title={min < 60 ? `${min} min` : "1 hr"}
+                  onClick={() => update((s) => (s.library.scan_frequency_minutes = min))}
+                />
+              ))}
+            </div>
+          </Field>
+        )}
 
         <Field label="Texture details">
           <div className="flex items-center gap-2">
