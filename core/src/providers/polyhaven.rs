@@ -35,6 +35,47 @@ pub fn list_texture_ids(agent: &ureq::Agent) -> Result<Vec<String>> {
     Ok(map.into_iter().map(|(k, _)| k).collect())
 }
 
+/// Fetch the browsable catalog: every texture asset with its name, thumbnail URL,
+/// and categories (for the Discover "Browse" grid). `synced` is left false here;
+/// the caller flags already-imported ones.
+pub fn list_catalog(agent: &ureq::Agent) -> Result<Vec<super::CatalogAsset>> {
+    let body = agent
+        .get(&format!("{API}/assets?type=textures"))
+        .call()
+        .map_err(|e| net_err("list catalog", e))?
+        .into_string()?;
+    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&body)?;
+
+    let mut out = Vec::with_capacity(map.len());
+    for (id, v) in map {
+        let name = v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or(&id)
+            .to_string();
+        let thumbnail_url = v
+            .get("thumbnail_url")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let categories = v
+            .get("categories")
+            .and_then(|c| c.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        out.push(super::CatalogAsset {
+            source: super::SOURCE_POLYHAVEN.to_string(),
+            id,
+            name,
+            thumbnail_url,
+            categories,
+            synced: false,
+        });
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
 /// One file to fetch for an asset.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlannedFile {

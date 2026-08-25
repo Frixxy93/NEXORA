@@ -382,6 +382,103 @@ pub fn get_discover_status(state: State<AppState>) -> Result<DiscoverStatus, Str
     })
 }
 
+/// Fetch the browsable Poly Haven catalog (name + thumbnail URL + categories),
+/// flagging which assets are already in the library. Networked; runs on the IPC
+/// thread (the frontend shows a spinner while it loads).
+#[tauri::command]
+pub fn discover_browse(
+    state: State<AppState>,
+) -> Result<Vec<nexora_core::providers::CatalogAsset>, String> {
+    use nexora_core::providers::{self, polyhaven};
+    let agent = polyhaven::agent();
+    let mut list = polyhaven::list_catalog(&agent).map_err(e)?;
+    let synced = {
+        let guard = state.db.lock().map_err(e)?;
+        providers::synced_ids(guard.conn(), providers::SOURCE_POLYHAVEN)
+    };
+    for a in &mut list {
+        if synced.contains(&a.id) {
+            a.synced = true;
+        }
+    }
+    Ok(list)
+}
+
+/// One asset the user picked in the Browse grid to download.
+#[derive(serde::Deserialize)]
+pub struct DiscoverItem {
+    pub source: String,
+    pub id: String,
+}
+
+/// Download a specific set of chosen assets (the Browse "Download selected"
+/// action), reusing the same worker pool + progress events as the full sync.
+#[tauri::command]
+pub fn start_discover_download(
+    app: AppHandle,
+    state: State<AppState>,
+    items: Vec<DiscoverItem>,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+
+    if items.is_empty() {
+        return Err("Nothing selected to download.".into());
+    }
+    if state.discover_running.swap(true, Ordering::SeqCst) {
+        return Err("A free-texture sync is already running.".into());
+    }
+    state.discover_stop.store(false, Ordering::SeqCst);
+
+    let (resolution, generate_preview) = {
+        let guard = state.db.lock().map_err(e)?;
+        let s = AppSettings::load(guard.conn()).map_err(e)?;
+        (s.discover.resolution.clone(), s.import.auto_generate_preview)
+    };
+
+    let db = state.db.clone();
+    let stop = state.discover_stop.clone();
+    let running = state.discover_running.clone();
+    let progress = state.discover_progress.clone();
+    let thumbnail_dir = state.thumbnail_dir.clone();
+    let app = app.clone();
+    let tuples: Vec<(String, String)> = items.into_iter().map(|i| (i.source, i.id)).collect();
+
+    std::thread::spawn(move || {
+        let opts = nexora_core::providers::SyncOptions {
+            resolution,
+            thumbnail_dir,
+            generate_preview,
+            source_polyhaven: true,
+            source_ambientcg: false,
+        };
+        let progress_cb = progress.clone();
+        let app_cb = app.clone();
+        let on_progress = move |p: &nexora_core::providers::SyncProgress| {
+            if let Ok(mut g) = progress_cb.lock() {
+                *g = p.clone();
+            }
+            let _ = app_cb.emit("discover:progress", p);
+        };
+
+        let result =
+            nexora_core::providers::run_selected(&db, &opts, &stop, &on_progress, tuples);
+
+        if let Err(err) = result {
+            if let Ok(mut g) = progress.lock() {
+                g.running = false;
+                g.finished = true;
+                g.error = Some(err.to_string());
+                let snapshot = g.clone();
+                drop(g);
+                let _ = app.emit("discover:progress", &snapshot);
+            }
+        }
+        let _ = app.emit("library:changed", ());
+        running.store(false, Ordering::SeqCst);
+    });
+    Ok(())
+}
+
 // ===========================================================================
 // Phase 2 — texture import & queries
 // ===========================================================================

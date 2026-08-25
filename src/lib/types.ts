@@ -68,6 +68,15 @@ export interface DiscoverStatus {
   progress: SyncProgress;
 }
 
+export interface CatalogAsset {
+  source: string;
+  id: string;
+  name: string;
+  thumbnail_url: string;
+  categories: string[];
+  synced: boolean;
+}
+
 export interface PluginInstallResult {
   installed: string[];
   skipped: string[];

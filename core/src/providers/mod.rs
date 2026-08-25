@@ -130,6 +130,22 @@ pub fn synced_count(conn: &rusqlite::Connection, source: &str) -> u64 {
     .unwrap_or(0)
 }
 
+/// The set of asset ids already imported from `source` (to flag them in Browse).
+pub fn synced_ids(conn: &rusqlite::Connection, source: &str) -> std::collections::HashSet<String> {
+    let _ = ensure_table(conn);
+    let mut set = std::collections::HashSet::new();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT asset_id FROM discover_synced WHERE source = ?1")
+    {
+        if let Ok(rows) = stmt.query_map([source], |r| r.get::<_, String>(0)) {
+            for r in rows.flatten() {
+                set.insert(r);
+            }
+        }
+    }
+    set
+}
+
 /// Total assets imported across all Discover sources (for status display).
 pub fn synced_count_total(conn: &rusqlite::Connection) -> u64 {
     let _ = ensure_table(conn);
@@ -249,19 +265,70 @@ fn download_and_import(
     Ok(bytes)
 }
 
+/// A browsable catalog entry (for the Discover "Browse" grid): enough to show a
+/// thumbnail and decide whether to download it.
+#[derive(Debug, Clone, Serialize)]
+pub struct CatalogAsset {
+    pub source: String,
+    pub id: String,
+    pub name: String,
+    /// Direct thumbnail URL (small preview) served by the source's CDN.
+    pub thumbnail_url: String,
+    pub categories: Vec<String>,
+    /// True if this asset is already in the library.
+    pub synced: bool,
+}
+
 /// Run the Discover auto-sync across all enabled sources: download every catalog
 /// texture (skipping ones already imported) at the chosen resolution and import
 /// each as a material.
-///
-/// Downloads run across [`CONCURRENCY`] worker threads (network-bound), each
-/// retrying transient failures with backoff. The DB mutex is locked only for the
-/// brief import/skip checks — never while downloading — so the app stays
-/// responsive and imports stay serialized. `stop` is honored between assets.
 pub fn run_sync(
     db: &Mutex<Database>,
     opts: &SyncOptions,
     stop: &AtomicBool,
     on_progress: &(dyn Fn(&SyncProgress) + Sync),
+) -> Result<SyncProgress> {
+    if !opts.source_polyhaven && !opts.source_ambientcg {
+        return Err(CoreError::Config(
+            "Enable at least one source (Poly Haven or ambientCG) before syncing.".into(),
+        ));
+    }
+    let jobs = collect_jobs(opts)?;
+    run_jobs(db, opts, stop, on_progress, jobs)
+}
+
+/// Download a specific set of assets (from the Browse grid) rather than the whole
+/// catalog. `items` is a list of `(source, id)`. ambientCG needs its bundle URL,
+/// which the browse list doesn't carry yet, so only Poly Haven items are queued.
+pub fn run_selected(
+    db: &Mutex<Database>,
+    opts: &SyncOptions,
+    stop: &AtomicBool,
+    on_progress: &(dyn Fn(&SyncProgress) + Sync),
+    items: Vec<(String, String)>,
+) -> Result<SyncProgress> {
+    let jobs: Vec<Job> = items
+        .into_iter()
+        .filter_map(|(source, id)| match source.as_str() {
+            SOURCE_POLYHAVEN => Some(Job::PolyHaven { id }),
+            _ => None,
+        })
+        .collect();
+    run_jobs(db, opts, stop, on_progress, jobs)
+}
+
+/// The shared worker-pool engine: download + import every job, concurrently.
+///
+/// Downloads run across [`CONCURRENCY`] worker threads (network-bound), each
+/// retrying transient failures with backoff. The DB mutex is locked only for the
+/// brief import/skip checks — never while downloading — so the app stays
+/// responsive and imports stay serialized. `stop` is honored between assets.
+fn run_jobs(
+    db: &Mutex<Database>,
+    opts: &SyncOptions,
+    stop: &AtomicBool,
+    on_progress: &(dyn Fn(&SyncProgress) + Sync),
+    jobs: Vec<Job>,
 ) -> Result<SyncProgress> {
     let registry = crate::maptypes::MapTypeRegistry::builtin();
 
@@ -280,12 +347,6 @@ pub fn run_sync(
         }
     };
 
-    if !opts.source_polyhaven && !opts.source_ambientcg {
-        return Err(CoreError::Config(
-            "Enable at least one source (Poly Haven or ambientCG) before syncing.".into(),
-        ));
-    }
-
     let import_opts = ImportOptions {
         managed: true,
         library_root: Some(library_root),
@@ -296,8 +357,6 @@ pub fn run_sync(
 
     let ph_agent = polyhaven::agent();
     let acg_agent = polyhaven::agent();
-
-    let jobs = collect_jobs(opts)?;
 
     let tmp = std::env::temp_dir().join("nexora-discover");
     let _ = std::fs::create_dir_all(&tmp);

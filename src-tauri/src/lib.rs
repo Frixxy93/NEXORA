@@ -171,6 +171,8 @@ pub fn run() {
             commands::start_discover_sync,
             commands::stop_discover_sync,
             commands::get_discover_status,
+            commands::discover_browse,
+            commands::start_discover_download,
             commands::recompute_metadata,
             commands::rename_asset,
             commands::set_asset_category,
