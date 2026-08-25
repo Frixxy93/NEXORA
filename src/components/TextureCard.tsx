@@ -14,7 +14,7 @@ export function TextureCard({
 }: {
   texture: TextureDto;
   selected: boolean;
-  onSelect: () => void;
+  onSelect: (e: React.MouseEvent) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [thumb, setThumb] = useState<string | null>(null);

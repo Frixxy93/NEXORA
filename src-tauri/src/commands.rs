@@ -762,6 +762,83 @@ pub fn set_texture_map_type(
     Ok(())
 }
 
+// ===========================================================================
+// Bulk operations (multi-select) — loop under one lock, emit once.
+// ===========================================================================
+
+/// Favorite/unfavorite many assets at once.
+#[tauri::command]
+pub fn set_favorite_many(
+    app: AppHandle,
+    state: State<AppState>,
+    ids: Vec<String>,
+    favorite: bool,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(e)?;
+        for id in &ids {
+            library::set_favorite(db.conn(), id, favorite).map_err(e)?;
+        }
+    }
+    let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
+/// Add one tag to many assets at once.
+#[tauri::command]
+pub fn add_tag_many(
+    app: AppHandle,
+    state: State<AppState>,
+    ids: Vec<String>,
+    name: String,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(e)?;
+        for id in &ids {
+            let _ = library::add_tag(db.conn(), id, &name);
+        }
+    }
+    let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
+/// Add many assets to a collection at once.
+#[tauri::command]
+pub fn add_to_collection_many(
+    app: AppHandle,
+    state: State<AppState>,
+    collection_id: i64,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(e)?;
+        for id in &ids {
+            library::add_to_collection(db.conn(), collection_id, id).map_err(e)?;
+        }
+    }
+    let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
+/// Remove many assets from the library (records only — never the files on disk).
+#[tauri::command]
+pub fn remove_assets(app: AppHandle, state: State<AppState>, ids: Vec<String>) -> Result<(), String> {
+    let mut previews = Vec::new();
+    {
+        let db = state.db.lock().map_err(e)?;
+        for id in &ids {
+            if let Ok(Some(p)) = library::remove_asset(db.conn(), id) {
+                previews.push(p);
+            }
+        }
+    }
+    for p in previews {
+        let _ = std::fs::remove_file(p); // cache thumbnails only; best-effort
+    }
+    let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
 /// Favorited materials + textures (spec §21).
 #[tauri::command]
 pub fn list_favorites(state: State<AppState>) -> Result<MixedAssets, String> {

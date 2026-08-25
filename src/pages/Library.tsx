@@ -47,12 +47,6 @@ function viewKind(view: View): Kind {
   return null;
 }
 
-type Selection =
-  | { kind: "texture"; id: string }
-  | { kind: "set"; id: string }
-  | { kind: "material"; id: string }
-  | null;
-
 // How many cards to mount initially and reveal per scroll step. Large libraries
 // (thousands of assets from Discover) would otherwise mount every card — and its
 // IntersectionObserver — at once. We window the render instead: only the first
@@ -64,6 +58,8 @@ type Cell =
   | { t: "material"; m: MaterialDto }
   | { t: "set"; s: TextureSetDto }
   | { t: "texture"; x: TextureDto };
+
+const cellId = (c: Cell) => (c.t === "material" ? c.m.id : c.t === "set" ? c.s.id : c.x.id);
 
 export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View) => void }) {
   const meta = VIEW_META[view] ?? { title: view, subtitle: "" };
@@ -78,7 +74,12 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
   const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
   const [collections, setCollections] = useState<CollectionDto[]>([]);
   const [activeCollection, setActiveCollection] = useState<CollectionDto | null>(null);
-  const [selected, setSelected] = useState<Selection>(null);
+  // Multi-selection: a set of ids (for highlight + bulk), plus the "active" id
+  // (last clicked) that drives the single-item inspector, and an anchor index
+  // for shift-range selection.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<number | null>(null);
   const [udim, setUdim] = useState<UdimInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [visibleCount, setVisibleCount] = useState(REVEAL_STEP);
@@ -90,11 +91,20 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
     api.getSettings().then((s) => setGridSize(s.appearance.grid_size)).catch(() => {});
   }, []);
 
-  // Reset the window (and scroll to top) whenever the displayed set changes.
+  // Reset the window + selection (and scroll to top) whenever the set changes.
   useEffect(() => {
     setVisibleCount(REVEAL_STEP);
+    setSelectedIds(new Set());
+    setActiveId(null);
+    setAnchor(null);
     if (gridScrollRef.current) gridScrollRef.current.scrollTop = 0;
   }, [view, mode, activeCollection]);
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setActiveId(null);
+    setAnchor(null);
+  };
 
   const showingSets = kind?.t === "library" && mode === "sets";
   const inCollection = kind?.t === "collections" && activeCollection !== null;
@@ -153,15 +163,47 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
     return () => unlisteners.forEach((u) => u());
   }, [load]);
 
+  // Side effects of making a texture/material the active (inspected) item.
   const selectTexture = (t: TextureDto) => {
-    setSelected({ kind: "texture", id: t.id });
     api.recordUsage(t.id).catch(() => {});
     setUdim(null);
     if (t.is_udim) api.getUdimInfo(t.id).then(setUdim).catch(() => setUdim(null));
   };
   const selectMaterial = (m: MaterialDto) => {
-    setSelected({ kind: "material", id: m.id });
     api.recordUsage(m.id).catch(() => {});
+  };
+
+  // A card click: plain = select one (and inspect); Ctrl/Cmd = toggle; Shift =
+  // range from the anchor. `index` is the position in the flattened `cells`.
+  const handleCardClick = (index: number, cell: Cell, ev: React.MouseEvent) => {
+    const id = cellId(cell);
+    if (ev.shiftKey && anchor !== null) {
+      const [a, b] = anchor <= index ? [anchor, index] : [index, anchor];
+      setSelectedIds(new Set(cells.slice(a, b + 1).map(cellId)));
+      setActiveId(id);
+    } else if (ev.metaKey || ev.ctrlKey) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      setActiveId(id);
+      setAnchor(index);
+    } else {
+      setSelectedIds(new Set([id]));
+      setActiveId(id);
+      setAnchor(index);
+      if (cell.t === "texture") selectTexture(cell.x);
+      else if (cell.t === "material") selectMaterial(cell.m);
+    }
+  };
+
+  // Single-select a texture from a non-windowed list (Duplicates view).
+  const selectSingleTexture = (t: TextureDto) => {
+    setSelectedIds(new Set([t.id]));
+    setActiveId(t.id);
+    selectTexture(t);
   };
 
   const addFiles = async () => {
@@ -210,7 +252,7 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
                 key={c.id}
                 onClick={() => {
                   setActiveCollection(c);
-                  setSelected(null);
+                  clearSelection();
                 }}
                 className="rounded-lg bg-ink-800 border border-line hover:border-ink-600 p-4 text-left flex flex-col gap-2"
               >
@@ -253,13 +295,14 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
       setVisibleCount((c) => (c < cells.length ? c + REVEAL_STEP : c));
     }
   };
+  const kindOf = (id: string): Cell["t"] | null =>
+    cells.find((c) => cellId(c) === id)?.t ?? null;
 
-  const selectedTexture =
-    selected?.kind === "texture" ? curTextures.find((t) => t.id === selected.id) ?? null : null;
-  const selectedSet =
-    selected?.kind === "set" ? curSets.find((s) => s.id === selected.id) ?? null : null;
-  const selectedMaterial =
-    selected?.kind === "material" ? curMaterials.find((m) => m.id === selected.id) ?? null : null;
+  const bulk = selectedIds.size > 1;
+  const singleId = !bulk ? activeId : null;
+  const selectedTexture = singleId ? curTextures.find((t) => t.id === singleId) ?? null : null;
+  const selectedSet = singleId ? curSets.find((s) => s.id === singleId) ?? null : null;
+  const selectedMaterial = singleId ? curMaterials.find((m) => m.id === singleId) ?? null : null;
 
   const empty =
     curMaterials.length + curTextures.length + curSets.length === 0 && kind.t !== "duplicates";
@@ -273,7 +316,7 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
               key={m}
               onClick={() => {
                 setMode(m);
-                setSelected(null);
+                clearSelection();
               }}
               className={`px-2.5 py-1 rounded text-xs capitalize ${
                 mode === m ? "bg-ink-700 text-white" : "text-muted"
@@ -314,7 +357,7 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
               className="text-muted hover:text-slate-200"
               onClick={() => {
                 setActiveCollection(null);
-                setSelected(null);
+                clearSelection();
               }}
               title="Back to collections"
             >
@@ -332,8 +375,8 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
           <DuplicatesView
             groups={duplicates}
             loading={loading}
-            selectedId={selected?.kind === "texture" ? selected.id : null}
-            onSelect={selectTexture}
+            selectedId={activeId}
+            onSelect={selectSingleTexture}
           />
         ) : empty ? (
           loading ? (
@@ -362,27 +405,27 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
               className="grid gap-3"
               style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${gridSize}px, 1fr))` }}
             >
-              {revealed.map((cell) =>
+              {revealed.map((cell, i) =>
                 cell.t === "material" ? (
                   <MaterialCard
                     key={cell.m.id}
                     material={cell.m}
-                    selected={selected?.kind === "material" && selected.id === cell.m.id}
-                    onSelect={() => selectMaterial(cell.m)}
+                    selected={selectedIds.has(cell.m.id)}
+                    onSelect={(e) => handleCardClick(i, cell, e)}
                   />
                 ) : cell.t === "set" ? (
                   <TextureSetCard
                     key={cell.s.id}
                     set={cell.s}
-                    selected={selected?.kind === "set" && selected.id === cell.s.id}
-                    onSelect={() => setSelected({ kind: "set", id: cell.s.id })}
+                    selected={selectedIds.has(cell.s.id)}
+                    onSelect={(e) => handleCardClick(i, cell, e)}
                   />
                 ) : (
                   <TextureCard
                     key={cell.x.id}
                     texture={cell.x}
-                    selected={selected?.kind === "texture" && selected.id === cell.x.id}
-                    onSelect={() => selectTexture(cell.x)}
+                    selected={selectedIds.has(cell.x.id)}
+                    onSelect={(e) => handleCardClick(i, cell, e)}
                   />
                 ),
               )}
@@ -397,7 +440,12 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
       </div>
 
       <Inspector>
-        {selectedMaterial ? (
+        {bulk ? (
+          <BulkActions
+            items={[...selectedIds].map((id) => ({ id, kind: kindOf(id) }))}
+            onClear={clearSelection}
+          />
+        ) : selectedMaterial ? (
           <MaterialInspector material={selectedMaterial} />
         ) : selectedSet ? (
           <TextureSetInspector set={selectedSet} onCreateMaterial={createMaterialFromSet} />
@@ -511,6 +559,158 @@ function NewCollectionButton({ onCreated }: { onCreated: () => void }) {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function BulkActions({
+  items,
+  onClear,
+}: {
+  items: { id: string; kind: Cell["t"] | null }[];
+  onClear: () => void;
+}) {
+  const ids = items.map((i) => i.id);
+  const [tag, setTag] = useState("");
+  const [collections, setCollections] = useState<CollectionDto[]>([]);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.listCollections().then(setCollections).catch(() => {});
+  }, []);
+
+  const run = async (fn: () => Promise<void>, clear = false) => {
+    setBusy(true);
+    try {
+      await fn();
+      if (clear) onClear();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendable = items.filter((i) => i.kind === "material" || i.kind === "texture");
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="p-4 space-y-4 overflow-y-auto flex-1">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold text-white">{ids.length} selected</span>
+          <button className="text-[11px] text-muted hover:text-slate-200" onClick={onClear}>
+            Clear
+          </button>
+        </div>
+        <p className="text-[11px] text-muted leading-relaxed">
+          Ctrl/⌘-click to add or remove one, Shift-click to select a range.
+        </p>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            className="btn-ghost text-xs"
+            disabled={busy}
+            onClick={() => run(() => api.setFavoriteMany(ids, true))}
+          >
+            ★ Favorite
+          </button>
+          <button
+            className="btn-ghost text-xs"
+            disabled={busy}
+            onClick={() => run(() => api.setFavoriteMany(ids, false))}
+          >
+            Unfavorite
+          </button>
+        </div>
+
+        <div>
+          <div className="field-label">Add tag to all</div>
+          <div className="flex gap-1.5">
+            <input
+              className="input text-xs py-1"
+              placeholder="tag name"
+              value={tag}
+              onChange={(e) => setTag(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && tag.trim())
+                  run(async () => {
+                    await api.addTagMany(ids, tag.trim());
+                    setTag("");
+                  });
+              }}
+            />
+            <button
+              className="btn-ghost text-xs px-2"
+              disabled={busy || !tag.trim()}
+              onClick={() =>
+                run(async () => {
+                  await api.addTagMany(ids, tag.trim());
+                  setTag("");
+                })
+              }
+            >
+              Add
+            </button>
+          </div>
+        </div>
+
+        {collections.length > 0 && (
+          <div>
+            <div className="field-label">Add all to collection</div>
+            <div className="space-y-1">
+              {collections.map((c) => (
+                <button
+                  key={c.id}
+                  className="w-full text-left btn-ghost text-xs flex items-center gap-2"
+                  disabled={busy}
+                  onClick={() => run(() => api.addToCollectionMany(c.id, ids))}
+                >
+                  <span>{c.icon ?? "📁"}</span> {c.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="p-3 border-t border-line space-y-2">
+        {sendable.length > 0 && (
+          <button
+            className="btn-ghost text-xs w-full"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                for (const it of sendable)
+                  await api.sendToMaya(it.id, it.kind as "material" | "texture");
+              })
+            }
+          >
+            Send {sendable.length} to Maya
+          </button>
+        )}
+        {confirmRemove ? (
+          <div className="flex gap-2">
+            <button
+              className="btn-ghost text-xs flex-1 text-bad"
+              disabled={busy}
+              onClick={() => run(() => api.removeAssets(ids), true)}
+            >
+              Confirm remove {ids.length}
+            </button>
+            <button className="btn-ghost text-xs" onClick={() => setConfirmRemove(false)}>
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            className="btn-ghost text-xs w-full text-bad"
+            onClick={() => setConfirmRemove(true)}
+          >
+            Remove {ids.length} from library
+          </button>
+        )}
+      </div>
     </div>
   );
 }

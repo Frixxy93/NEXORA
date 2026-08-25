@@ -133,6 +133,10 @@ pub fn run() {
             commands::rename_asset,
             commands::set_asset_category,
             commands::set_texture_map_type,
+            commands::set_favorite_many,
+            commands::add_tag_many,
+            commands::add_to_collection_many,
+            commands::remove_assets,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXORA");

@@ -550,6 +550,48 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       fireLibraryChanged();
       return undefined as unknown as T;
     }
+    case "set_favorite_many": {
+      const ids = (args?.ids as string[]) ?? [];
+      for (const id of ids) {
+        const a = findAsset(id);
+        if (a) a.favorite = Boolean(args?.favorite);
+      }
+      fireLibraryChanged();
+      return undefined as unknown as T;
+    }
+    case "add_tag_many": {
+      const ids = (args?.ids as string[]) ?? [];
+      const name = String(args?.name).trim().replace(/^#/, "").trim();
+      for (const id of ids) {
+        const tags = mockTagsByAsset.get(id) ?? [];
+        if (name && !tags.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
+          tags.push({ id: ++mockTagSeq, name });
+          mockTagsByAsset.set(id, tags);
+        }
+      }
+      fireLibraryChanged();
+      return undefined as unknown as T;
+    }
+    case "add_to_collection_many": {
+      const ids = (args?.ids as string[]) ?? [];
+      const col = mockCollections.find((c) => c.id === args?.collectionId);
+      for (const id of ids) col?.members.add(id);
+      fireLibraryChanged();
+      return undefined as unknown as T;
+    }
+    case "remove_assets": {
+      const ids = new Set((args?.ids as string[]) ?? []);
+      for (let i = mockTextures.length - 1; i >= 0; i--)
+        if (ids.has(mockTextures[i].id)) mockTextures.splice(i, 1);
+      for (let i = mockMaterials.length - 1; i >= 0; i--)
+        if (ids.has(mockMaterials[i].id)) mockMaterials.splice(i, 1);
+      for (const id of ids) {
+        mockTagsByAsset.delete(id);
+        for (const c of mockCollections) c.members.delete(id);
+      }
+      fireLibraryChanged();
+      return undefined as unknown as T;
+    }
     default:
       throw new Error(`mockInvoke: unhandled command '${cmd}'`);
   }
@@ -610,6 +652,13 @@ export const api = {
     call<void>("set_asset_category", { id, category }),
   setTextureMapType: (id: string, mapType: string | null) =>
     call<void>("set_texture_map_type", { id, mapType }),
+  // Bulk / multi-select
+  setFavoriteMany: (ids: string[], favorite: boolean) =>
+    call<void>("set_favorite_many", { ids, favorite }),
+  addTagMany: (ids: string[], name: string) => call<void>("add_tag_many", { ids, name }),
+  addToCollectionMany: (collectionId: number, ids: string[]) =>
+    call<void>("add_to_collection_many", { collectionId, ids }),
+  removeAssets: (ids: string[]) => call<void>("remove_assets", { ids }),
   listFavorites: () => call<MixedAssets>("list_favorites"),
   listRecentAdded: () => call<MixedAssets>("list_recent_added"),
   listRecentUsed: () => call<MixedAssets>("list_recent_used"),
