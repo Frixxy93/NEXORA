@@ -571,31 +571,33 @@ fn run_import(
             );
         }
 
-        // Analyze OUTSIDE the lock — this reads and hashes the whole file, the
-        // single heaviest per-file step.
-        let a = match texture::analyze(file, &registry) {
-            Ok(a) => a,
+        // Analyze OUTSIDE the lock — reads + hashes the file (and unpacks a
+        // channel-packed ARM/ORM map into its component maps), the heaviest step.
+        let prepared = match texture::prepare_import(file, &opts, &registry) {
+            Ok(list) => list,
             Err(_) => {
                 report.failed += 1;
                 continue;
             }
         };
 
-        // Brief per-file lock for the DB write only.
-        let outcome = texture::import_texture(dblock(db).conn(), &a, &opts);
-        match outcome {
-            Ok(ImportOutcome::Imported { id, .. }) => {
-                report.imported += 1;
-                // Auto-tag with the texture's category (its map type), when enabled.
-                if settings.import.auto_tag {
-                    if let Some(mt) = a.map_type.as_deref() {
-                        let _ = library::add_tag(dblock(db).conn(), &id, mt);
+        for a in &prepared {
+            // Brief per-file lock for the DB write only.
+            let outcome = texture::import_texture(dblock(db).conn(), a, &opts);
+            match outcome {
+                Ok(ImportOutcome::Imported { id, .. }) => {
+                    report.imported += 1;
+                    // Auto-tag with the texture's category (its map type), when enabled.
+                    if settings.import.auto_tag {
+                        if let Some(mt) = a.map_type.as_deref() {
+                            let _ = library::add_tag(dblock(db).conn(), &id, mt);
+                        }
                     }
                 }
+                Ok(ImportOutcome::DuplicatePath { .. }) => report.duplicates += 1,
+                Ok(ImportOutcome::Skipped { .. }) => report.failed += 1,
+                Err(_) => report.failed += 1,
             }
-            Ok(ImportOutcome::DuplicatePath { .. }) => report.duplicates += 1,
-            Ok(ImportOutcome::Skipped { .. }) => report.failed += 1,
-            Err(_) => report.failed += 1,
         }
     }
 

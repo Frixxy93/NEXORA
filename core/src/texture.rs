@@ -305,6 +305,88 @@ fn title_word(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Packed maps (ARM / ORM / RMA …) — channel-packed grayscale maps
+// ---------------------------------------------------------------------------
+
+/// If the filename marks a channel-packed map, return the slot each RGB channel
+/// carries (e.g. ARM → AO, Roughness, Metallic). These pack three grayscale maps
+/// into one image and are common in game/PBR asset packs; NEXORA splits them into
+/// usable single-channel maps on import.
+pub fn detect_packed(filename: &str) -> Option<[&'static str; 3]> {
+    let stem = filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(filename);
+    for tok in stem.split(|c| c == '_' || c == '-' || c == '.' || c == ' ') {
+        match tok.to_lowercase().as_str() {
+            // AO/Occlusion, Roughness, Metallic (ARM and glTF's ORM are the same).
+            "arm" | "orm" => return Some(["ao", "roughness", "metallic"]),
+            "rma" | "rmo" => return Some(["roughness", "metallic", "ao"]),
+            "mra" | "mro" => return Some(["metallic", "roughness", "ao"]),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a channel-packed map into single-channel grayscale sibling files next to
+/// the source (`{stem}_{slot}.png`), returning `(slot, path)` for each. Existing
+/// siblings are reused (re-import stays idempotent). Sibling files sit beside the
+/// source so both managed (copied in) and referenced (indexed in place) modes
+/// work uniformly.
+pub fn unpack_packed(src: &Path, layout: [&'static str; 3]) -> Result<Vec<(String, PathBuf)>> {
+    let img = image::open(src)
+        .map_err(|e| CoreError::Config(format!("decode packed map: {e}")))?
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    let dir = src.parent().unwrap_or_else(|| Path::new("."));
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("packed");
+
+    let mut out = Vec::new();
+    for (ci, slot) in layout.iter().enumerate() {
+        if slot.is_empty() {
+            continue;
+        }
+        let dest = dir.join(format!("{stem}_{slot}.png"));
+        if !dest.exists() {
+            let mut gray = image::GrayImage::new(w, h);
+            for (x, y, px) in img.enumerate_pixels() {
+                gray.put_pixel(x, y, image::Luma([px[ci]]));
+            }
+            gray.save(&dest)
+                .map_err(|e| CoreError::Config(format!("write channel: {e}")))?;
+        }
+        out.push((slot.to_string(), dest));
+    }
+    Ok(out)
+}
+
+/// Analyze a file for import, expanding a channel-packed map into its component
+/// single-channel maps. Does NOT touch the DB — the heavy work (decode/unpack)
+/// runs unlocked so the caller can keep DB locks brief. A non-packed file (or one
+/// that fails to unpack) yields a single analysis.
+pub fn prepare_import(
+    path: &Path,
+    opts: &ImportOptions,
+    registry: &MapTypeRegistry,
+) -> Result<Vec<AnalyzedTexture>> {
+    if opts.detect_maps {
+        if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+            if let Some(layout) = detect_packed(fname) {
+                if let Ok(comps) = unpack_packed(path, layout) {
+                    if !comps.is_empty() {
+                        let mut out = Vec::with_capacity(comps.len());
+                        for (_slot, comp) in comps {
+                            out.push(analyze(&comp, registry)?);
+                        }
+                        return Ok(out);
+                    }
+                }
+                // Unpack failed — fall through and import the packed file as-is.
+            }
+        }
+    }
+    Ok(vec![analyze(path, registry)?])
+}
+
+// ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
 
@@ -1069,6 +1151,45 @@ mod tests {
         let n = backfill_texture_metadata(db.conn()).unwrap();
         assert_eq!(n, 1);
         assert_eq!(get_texture(db.conn(), &id).unwrap().unwrap().tileable, Some(true));
+    }
+
+    #[test]
+    fn packed_arm_map_unpacks_into_component_maps() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = MapTypeRegistry::builtin();
+        // ARM: R = AO (50), G = Roughness (150), B = Metallic (250).
+        let path = dir.path().join("Rock_ARM_2K.png");
+        let mut img = RgbImage::new(16, 16);
+        for px in img.pixels_mut() {
+            *px = Rgb([50, 150, 250]);
+        }
+        img.save(&path).unwrap();
+
+        assert_eq!(detect_packed("Rock_ARM_2K.png"), Some(["ao", "roughness", "metallic"]));
+
+        let opts = ImportOptions {
+            managed: false,
+            library_root: None,
+            thumbnail_dir: dir.path().join("_t"),
+            generate_preview: false,
+            detect_maps: true,
+        };
+        let prepared = prepare_import(&path, &opts, &reg).unwrap();
+        assert_eq!(prepared.len(), 3);
+        let slots: std::collections::HashSet<_> =
+            prepared.iter().filter_map(|a| a.map_type.clone()).collect();
+        assert!(slots.contains("ao"));
+        assert!(slots.contains("roughness"));
+        assert!(slots.contains("metallic"));
+        // Component siblings were written next to the source.
+        assert!(dir.path().join("Rock_ARM_2K_roughness.png").exists());
+
+        // With map detection off, the packed file is imported as-is (no split).
+        let opts_off = ImportOptions {
+            detect_maps: false,
+            ..opts.clone()
+        };
+        assert_eq!(prepare_import(&path, &opts_off, &reg).unwrap().len(), 1);
     }
 
     #[test]

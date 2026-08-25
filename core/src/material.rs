@@ -243,18 +243,21 @@ pub fn import_material_folder(
     let mut textures_imported = 0usize;
 
     for file in &files {
-        let a = analyze(file, registry)?;
-        let tex_id = match import_texture(conn, &a, opts)? {
-            ImportOutcome::Imported { id, .. } => {
-                textures_imported += 1;
-                id
-            }
-            ImportOutcome::DuplicatePath { id } => id,
-            ImportOutcome::Skipped { .. } => continue,
-        };
-        if let Some(slot) = &a.map_type {
-            if seen_slots.insert(slot.clone()) {
-                slot_tex.push((slot.clone(), tex_id));
+        // A channel-packed map (ARM/ORM/…) expands into several component maps.
+        let prepared = texture::prepare_import(file, opts, registry)?;
+        for a in &prepared {
+            let tex_id = match import_texture(conn, a, opts)? {
+                ImportOutcome::Imported { id, .. } => {
+                    textures_imported += 1;
+                    id
+                }
+                ImportOutcome::DuplicatePath { id } => id,
+                ImportOutcome::Skipped { .. } => continue,
+            };
+            if let Some(slot) = &a.map_type {
+                if seen_slots.insert(slot.clone()) {
+                    slot_tex.push((slot.clone(), tex_id));
+                }
             }
         }
     }
