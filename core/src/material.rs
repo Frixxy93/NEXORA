@@ -370,33 +370,32 @@ fn read_head(r: &rusqlite::Row) -> rusqlite::Result<MaterialHead> {
     })
 }
 
-/// List materials, newest first, optionally filtered by category.
-pub fn list_materials(conn: &Connection, category: Option<&str>) -> Result<Vec<MaterialDto>> {
-    let base = "SELECT a.id, a.name, a.category, m.is_pbr, m.tileable, m.is_udim,
+/// The shared material-head read model. Callers append a filter/order clause.
+const MATERIAL_HEAD_SELECT: &str = "SELECT a.id, a.name, a.category, m.is_pbr, m.tileable, m.is_udim,
                        m.resolution, m.health, m.status, a.favorite
                 FROM assets a JOIN materials m ON m.asset_id = a.id
                 WHERE a.kind = 'material'";
 
+/// Run the material-head query with an extra filter/order clause appended.
+fn query_material_heads(
+    conn: &Connection,
+    filter: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<MaterialHead>> {
+    let sql = format!("{MATERIAL_HEAD_SELECT} {filter}");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params, read_head)?;
     let mut heads = Vec::new();
-    match category {
-        Some(cat) => {
-            let sql = format!("{base} AND a.category = ?1 ORDER BY a.created_at DESC");
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([cat], read_head)?;
-            for r in rows {
-                heads.push(r?);
-            }
-        }
-        None => {
-            let sql = format!("{base} ORDER BY a.created_at DESC");
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([], read_head)?;
-            for r in rows {
-                heads.push(r?);
-            }
-        }
+    for r in rows {
+        heads.push(r?);
     }
+    Ok(heads)
+}
 
+/// Attach each head's maps, renderers, missing slots, and preview into a DTO.
+/// The per-head sub-queries run only for the heads actually selected, so scoped
+/// callers (get/by-ids/favorites/recent) never load the whole library.
+fn attach_material_details(conn: &Connection, heads: Vec<MaterialHead>) -> Result<Vec<MaterialDto>> {
     let mut out = Vec::new();
     for head in heads {
         let MaterialHead {
@@ -444,9 +443,58 @@ pub fn list_materials(conn: &Connection, category: Option<&str>) -> Result<Vec<M
     Ok(out)
 }
 
-/// Fetch a single material by id.
+/// List materials, newest first, optionally filtered by category.
+pub fn list_materials(conn: &Connection, category: Option<&str>) -> Result<Vec<MaterialDto>> {
+    let heads = match category {
+        Some(cat) => query_material_heads(
+            conn,
+            "AND a.category = ?1 ORDER BY a.created_at DESC",
+            &[&cat],
+        )?,
+        None => query_material_heads(conn, "ORDER BY a.created_at DESC", &[])?,
+    };
+    attach_material_details(conn, heads)
+}
+
+/// Fetch many materials by id in a single head query (results newest-first).
+/// Empty input returns empty without touching the DB.
+pub fn list_materials_by_ids(conn: &Connection, ids: &[String]) -> Result<Vec<MaterialDto>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "{MATERIAL_HEAD_SELECT} AND a.id IN ({placeholders}) ORDER BY a.created_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), read_head)?;
+    let mut heads = Vec::new();
+    for r in rows {
+        heads.push(r?);
+    }
+    attach_material_details(conn, heads)
+}
+
+/// Favorited materials only (filtered in SQL, no full-table load).
+pub fn list_favorite_materials(conn: &Connection) -> Result<Vec<MaterialDto>> {
+    let heads = query_material_heads(conn, "AND a.favorite = 1 ORDER BY a.created_at DESC", &[])?;
+    attach_material_details(conn, heads)
+}
+
+/// The `limit` most recently added materials (LIMIT in SQL).
+pub fn list_recent_materials(conn: &Connection, limit: usize) -> Result<Vec<MaterialDto>> {
+    let lim = limit as i64;
+    let heads = query_material_heads(conn, "ORDER BY a.created_at DESC LIMIT ?1", &[&lim])?;
+    attach_material_details(conn, heads)
+}
+
+/// Fetch a single material by id — an indexed primary-key lookup, not a scan.
 pub fn get_material(conn: &Connection, id: &str) -> Result<Option<MaterialDto>> {
-    Ok(list_materials(conn, None)?.into_iter().find(|m| m.id == id))
+    let heads = query_material_heads(conn, "AND a.id = ?1", &[&id])?;
+    Ok(attach_material_details(conn, heads)?.into_iter().next())
 }
 
 /// Count materials that aren't fully healthy (for library health, spec §30).

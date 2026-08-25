@@ -103,19 +103,15 @@ pub fn search(conn: &Connection, q: &str) -> Result<SearchResults> {
     if q.trim().is_empty() {
         return Ok(SearchResults::default());
     }
-    let ids = matching_ids(conn, q)?;
+    let id_set = matching_ids(conn, q)?;
+    let ids: Vec<String> = id_set.iter().cloned().collect();
     Ok(SearchResults {
-        materials: material::list_materials(conn, None)?
-            .into_iter()
-            .filter(|m| ids.contains(&m.id))
-            .collect(),
-        textures: texture::list_textures(conn, None)?
-            .into_iter()
-            .filter(|t| ids.contains(&t.id))
-            .collect(),
+        materials: material::list_materials_by_ids(conn, &ids)?,
+        textures: texture::list_textures_by_ids(conn, &ids)?,
+        // Sets are few and have no id-scoped reader; an in-memory filter is fine.
         sets: texture::list_texture_sets(conn)?
             .into_iter()
-            .filter(|s| ids.contains(&s.id))
+            .filter(|s| id_set.contains(&s.id))
             .collect(),
     })
 }
@@ -136,14 +132,8 @@ pub fn set_favorite(conn: &Connection, id: &str, favorite: bool) -> Result<()> {
 /// All favorited materials and textures.
 pub fn list_favorites(conn: &Connection) -> Result<MixedAssets> {
     Ok(MixedAssets {
-        materials: material::list_materials(conn, None)?
-            .into_iter()
-            .filter(|m| m.favorite)
-            .collect(),
-        textures: texture::list_textures(conn, None)?
-            .into_iter()
-            .filter(|t| t.favorite)
-            .collect(),
+        materials: material::list_favorite_materials(conn)?,
+        textures: texture::list_favorite_textures(conn)?,
     })
 }
 
@@ -154,14 +144,8 @@ pub fn list_favorites(conn: &Connection) -> Result<MixedAssets> {
 /// The most recently added materials and textures (each capped at `limit`).
 pub fn list_recent_added(conn: &Connection, limit: usize) -> Result<MixedAssets> {
     Ok(MixedAssets {
-        materials: material::list_materials(conn, None)?
-            .into_iter()
-            .take(limit)
-            .collect(),
-        textures: texture::list_textures(conn, None)?
-            .into_iter()
-            .take(limit)
-            .collect(),
+        materials: material::list_recent_materials(conn, limit)?,
+        textures: texture::list_recent_textures(conn, limit)?,
     })
 }
 
@@ -184,11 +168,12 @@ pub fn list_recent_used(conn: &Connection, limit: usize) -> Result<MixedAssets> 
         .query_map([limit as i64], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
 
-    let mats: HashMap<String, MaterialDto> = material::list_materials(conn, None)?
+    // Fetch only the recently-used assets (bounded by `limit`), not the world.
+    let mats: HashMap<String, MaterialDto> = material::list_materials_by_ids(conn, &ordered)?
         .into_iter()
         .map(|m| (m.id.clone(), m))
         .collect();
-    let texs: HashMap<String, TextureDto> = texture::list_textures(conn, None)?
+    let texs: HashMap<String, TextureDto> = texture::list_textures_by_ids(conn, &ordered)?
         .into_iter()
         .map(|t| (t.id.clone(), t))
         .collect();
@@ -343,18 +328,12 @@ pub fn remove_from_collection(conn: &Connection, collection_id: i64, asset_id: &
 pub fn collection_members(conn: &Connection, collection_id: i64) -> Result<MixedAssets> {
     let mut stmt =
         conn.prepare("SELECT asset_id FROM collection_assets WHERE collection_id = ?1")?;
-    let ids: HashSet<String> = stmt
+    let ids: Vec<String> = stmt
         .query_map([collection_id], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(MixedAssets {
-        materials: material::list_materials(conn, None)?
-            .into_iter()
-            .filter(|m| ids.contains(&m.id))
-            .collect(),
-        textures: texture::list_textures(conn, None)?
-            .into_iter()
-            .filter(|t| ids.contains(&t.id))
-            .collect(),
+        materials: material::list_materials_by_ids(conn, &ids)?,
+        textures: texture::list_textures_by_ids(conn, &ids)?,
     })
 }
 
@@ -370,17 +349,26 @@ pub fn list_duplicates(conn: &Connection) -> Result<Vec<DuplicateGroup>> {
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
 
-    let by_id: HashMap<String, TextureDto> = texture::list_textures(conn, None)?
-        .into_iter()
-        .map(|t| (t.id.clone(), t))
-        .collect();
-
-    let mut out = Vec::new();
+    // Gather the texture ids in every duplicate group, then fetch just those in
+    // one query — never the whole texture table.
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    let mut all_ids: Vec<String> = Vec::new();
     for hash in hashes {
         let mut ids = conn.prepare("SELECT texture_id FROM file_hashes WHERE hash = ?1")?;
         let tex_ids: Vec<String> = ids
             .query_map([&hash], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<_>>()?;
+        all_ids.extend(tex_ids.iter().cloned());
+        groups.push((hash, tex_ids));
+    }
+
+    let by_id: HashMap<String, TextureDto> = texture::list_textures_by_ids(conn, &all_ids)?
+        .into_iter()
+        .map(|t| (t.id.clone(), t))
+        .collect();
+
+    let mut out = Vec::new();
+    for (hash, tex_ids) in groups {
         let textures: Vec<TextureDto> =
             tex_ids.into_iter().filter_map(|id| by_id.get(&id).cloned()).collect();
         if textures.len() > 1 {

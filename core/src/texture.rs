@@ -517,70 +517,106 @@ pub fn generate_thumbnail(src: &Path, dir: &Path, id: &str) -> Result<PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// List textures, newest first, optionally filtered by map-type slug.
-pub fn list_textures(conn: &Connection, map_type: Option<&str>) -> Result<Vec<TextureDto>> {
-    let base = "SELECT a.id, a.name, t.map_type, a.category, t.width, t.height, t.format,
+/// The shared texture read model. Callers append a filter/order clause.
+const TEXTURE_SELECT: &str = "SELECT a.id, a.name, t.map_type, a.category, t.width, t.height, t.format,
                        t.channels, t.color_space, t.file_size, t.is_udim, t.tileable,
                        a.favorite, t.managed, t.file_path, p.preview_path, a.created_at
                 FROM assets a
                 JOIN textures t ON t.asset_id = a.id
                 LEFT JOIN previews p ON p.asset_id = a.id
                 WHERE a.kind = 'texture'";
-    let map = |row: &rusqlite::Row| -> rusqlite::Result<TextureDto> {
-        Ok(TextureDto {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            map_type: row.get(2)?,
-            category: row.get(3)?,
-            width: row.get::<_, Option<i64>>(4)?.map(|v| v as u32),
-            height: row.get::<_, Option<i64>>(5)?.map(|v| v as u32),
-            format: row.get(6)?,
-            channels: row.get::<_, Option<i64>>(7)?.map(|v| v as u8),
-            color_space: row.get(8)?,
-            file_size: row.get::<_, Option<i64>>(9)?.map(|v| v as u64),
-            is_udim: row.get::<_, i64>(10)? != 0,
-            tileable: row.get::<_, Option<i64>>(11)?.map(|v| v != 0),
-            favorite: row.get::<_, i64>(12)? != 0,
-            managed: row.get::<_, i64>(13)? != 0,
-            file_path: row.get(14)?,
-            thumbnail_path: row.get(15)?,
-            created_at: row.get(16)?,
-        })
-    };
 
+fn map_texture_row(row: &rusqlite::Row) -> rusqlite::Result<TextureDto> {
+    Ok(TextureDto {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        map_type: row.get(2)?,
+        category: row.get(3)?,
+        width: row.get::<_, Option<i64>>(4)?.map(|v| v as u32),
+        height: row.get::<_, Option<i64>>(5)?.map(|v| v as u32),
+        format: row.get(6)?,
+        channels: row.get::<_, Option<i64>>(7)?.map(|v| v as u8),
+        color_space: row.get(8)?,
+        file_size: row.get::<_, Option<i64>>(9)?.map(|v| v as u64),
+        is_udim: row.get::<_, i64>(10)? != 0,
+        tileable: row.get::<_, Option<i64>>(11)?.map(|v| v != 0),
+        favorite: row.get::<_, i64>(12)? != 0,
+        managed: row.get::<_, i64>(13)? != 0,
+        file_path: row.get(14)?,
+        thumbnail_path: row.get(15)?,
+        created_at: row.get(16)?,
+    })
+}
+
+/// Run the texture read model with an extra filter/order clause appended.
+fn query_textures(
+    conn: &Connection,
+    filter: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<TextureDto>> {
+    let sql = format!("{TEXTURE_SELECT} {filter}");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params, map_texture_row)?;
     let mut out = Vec::new();
-    match map_type {
-        // "other" means unclassified — textures whose map type wasn't detected.
-        Some("other") => {
-            let sql = format!("{base} AND t.map_type IS NULL ORDER BY a.created_at DESC");
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([], map)?;
-            for r in rows {
-                out.push(r?);
-            }
-        }
-        Some(mt) => {
-            let sql = format!("{base} AND t.map_type = ?1 ORDER BY a.created_at DESC");
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([mt], map)?;
-            for r in rows {
-                out.push(r?);
-            }
-        }
-        None => {
-            let sql = format!("{base} ORDER BY a.created_at DESC");
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([], map)?;
-            for r in rows {
-                out.push(r?);
-            }
-        }
+    for r in rows {
+        out.push(r?);
     }
     Ok(out)
 }
 
-/// Fetch a single texture by id.
+pub fn list_textures(conn: &Connection, map_type: Option<&str>) -> Result<Vec<TextureDto>> {
+    match map_type {
+        // "other" means unclassified — textures whose map type wasn't detected.
+        Some("other") => query_textures(
+            conn,
+            "AND t.map_type IS NULL ORDER BY a.created_at DESC",
+            &[],
+        ),
+        Some(mt) => query_textures(
+            conn,
+            "AND t.map_type = ?1 ORDER BY a.created_at DESC",
+            &[&mt],
+        ),
+        None => query_textures(conn, "ORDER BY a.created_at DESC", &[]),
+    }
+}
+
+/// Fetch a single texture by id — an indexed primary-key lookup, not a scan.
 pub fn get_texture(conn: &Connection, id: &str) -> Result<Option<TextureDto>> {
-    Ok(list_textures(conn, None)?.into_iter().find(|t| t.id == id))
+    Ok(query_textures(conn, "AND a.id = ?1", &[&id])?
+        .into_iter()
+        .next())
+}
+
+/// Fetch many textures by id in a single query (unordered input; results ordered
+/// newest-first). Empty input returns empty without touching the DB.
+pub fn list_textures_by_ids(conn: &Connection, ids: &[String]) -> Result<Vec<TextureDto>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!("{TEXTURE_SELECT} AND a.id IN ({placeholders}) ORDER BY a.created_at DESC");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), map_texture_row)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Favorited textures only (filtered in SQL, no full-table load).
+pub fn list_favorite_textures(conn: &Connection) -> Result<Vec<TextureDto>> {
+    query_textures(conn, "AND a.favorite = 1 ORDER BY a.created_at DESC", &[])
+}
+
+/// The `limit` most recently added textures (LIMIT in SQL).
+pub fn list_recent_textures(conn: &Connection, limit: usize) -> Result<Vec<TextureDto>> {
+    let lim = limit as i64;
+    query_textures(conn, "ORDER BY a.created_at DESC LIMIT ?1", &[&lim])
 }
 
 /// Collect importable files from a set of paths (files and/or directories).
@@ -887,6 +923,41 @@ mod tests {
         let again = import_texture(db.conn(), &a, &opts).unwrap();
         assert!(matches!(again, ImportOutcome::DuplicatePath { .. }));
         assert_eq!(list_textures(db.conn(), None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn scoped_fetches_return_only_requested_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let reg = MapTypeRegistry::builtin();
+        let opts = ImportOptions {
+            managed: false,
+            library_root: None,
+            thumbnail_dir: dir.path().join("_t"),
+            generate_preview: false,
+            detect_maps: true,
+        };
+        let mut ids = Vec::new();
+        for n in ["a_basecolor.png", "b_roughness.png", "c_normal.png"] {
+            let a = analyze(&write_png(dir.path(), n, 16, 16), &reg).unwrap();
+            match import_texture(db.conn(), &a, &opts).unwrap() {
+                ImportOutcome::Imported { id, .. } => ids.push(id),
+                other => panic!("{other:?}"),
+            }
+        }
+
+        // get_texture returns exactly the requested row (indexed lookup).
+        let got = get_texture(db.conn(), &ids[1]).unwrap().unwrap();
+        assert_eq!(got.id, ids[1]);
+        assert!(get_texture(db.conn(), "NX-TEX-0000-0000").unwrap().is_none());
+
+        // by_ids returns just the subset; empty input is empty without a query.
+        let subset = list_textures_by_ids(db.conn(), &[ids[0].clone(), ids[2].clone()]).unwrap();
+        assert_eq!(subset.len(), 2);
+        let returned: std::collections::HashSet<_> = subset.iter().map(|t| t.id.clone()).collect();
+        assert!(returned.contains(&ids[0]) && returned.contains(&ids[2]));
+        assert!(!returned.contains(&ids[1]));
+        assert!(list_textures_by_ids(db.conn(), &[]).unwrap().is_empty());
     }
 
     #[test]
