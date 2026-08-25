@@ -146,13 +146,15 @@ pub fn get_library_health(state: State<AppState>) -> Result<LibraryHealth, Strin
         .map_err(e)?;
     let incomplete = material::incomplete_material_count(conn).map_err(e)?;
     let duplicates = library::duplicate_count(conn).map_err(e)?;
+    let missing_files = library::missing_file_count(conn).map_err(e)?;
+    let broken_references = library::broken_reference_count(conn).map_err(e)?;
     Ok(LibraryHealth {
         assets: assets as u64,
-        healthy: (assets - incomplete).max(0) as u64,
-        missing_files: 0,
+        healthy: (assets - incomplete - missing_files).max(0) as u64,
+        missing_files: missing_files as u64,
         duplicates: duplicates as u64,
         incomplete_materials: incomplete as u64,
-        broken_references: 0,
+        broken_references: broken_references as u64,
     })
 }
 

@@ -388,6 +388,78 @@ pub fn duplicate_count(conn: &Connection) -> Result<i64> {
 }
 
 // ---------------------------------------------------------------------------
+// Integrity — missing files & broken references (spec §30)
+// ---------------------------------------------------------------------------
+
+/// One texture whose backing file(s) are no longer on disk (for relink/report).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissingTexture {
+    pub id: String,
+    pub name: String,
+    /// The stored path (a `<UDIM>` pattern for UDIM textures).
+    pub file_path: String,
+    pub is_udim: bool,
+}
+
+/// Textures whose backing file is gone from disk. A normal texture is missing
+/// when its `file_path` doesn't exist; a UDIM texture is missing when none of its
+/// recorded tiles exist. Never touches the files — it only stats them.
+pub fn list_missing_textures(conn: &Connection) -> Result<Vec<MissingTexture>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.name, t.file_path, t.is_udim
+         FROM assets a JOIN textures t ON t.asset_id = a.id
+         WHERE a.kind = 'texture'",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)? != 0,
+        ))
+    })?;
+
+    let mut missing = Vec::new();
+    for row in rows {
+        let (id, name, file_path, is_udim) = row?;
+        let present = if is_udim {
+            // Present if at least one recorded tile still exists on disk.
+            let mut ts = conn.prepare("SELECT file_path FROM udim_tiles WHERE texture_id = ?1")?;
+            let tiles: Vec<String> = ts
+                .query_map([&id], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            tiles.iter().any(|p| std::path::Path::new(p).exists())
+        } else {
+            std::path::Path::new(&file_path).exists()
+        };
+        if !present {
+            missing.push(MissingTexture {
+                id,
+                name,
+                file_path,
+                is_udim,
+            });
+        }
+    }
+    Ok(missing)
+}
+
+/// How many textures have missing backing files (see [`list_missing_textures`]).
+pub fn missing_file_count(conn: &Connection) -> Result<i64> {
+    Ok(list_missing_textures(conn)?.len() as i64)
+}
+
+/// Material slots whose texture link was severed (texture removed from library),
+/// leaving the slot pointing at nothing (spec §30).
+pub fn broken_reference_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM material_maps WHERE texture_id IS NULL",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+// ---------------------------------------------------------------------------
 // Remove from library (spec §26 — never touches the user's actual files)
 // ---------------------------------------------------------------------------
 
@@ -546,6 +618,55 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM file_hashes", [], |r| r.get(0))
             .unwrap();
         assert_eq!(hashes, 0);
+    }
+
+    #[test]
+    fn missing_files_detected_when_backing_file_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let id = import(&db, dir.path(), "wood_basecolor.png", 100);
+        let file = dir.path().join("wood_basecolor.png");
+
+        // All files present at import time.
+        assert_eq!(missing_file_count(db.conn()).unwrap(), 0);
+        assert!(list_missing_textures(db.conn()).unwrap().is_empty());
+
+        // Delete the backing file on disk → now reported missing (record stays).
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(missing_file_count(db.conn()).unwrap(), 1);
+        let miss = list_missing_textures(db.conn()).unwrap();
+        assert_eq!(miss.len(), 1);
+        assert_eq!(miss[0].id, id);
+    }
+
+    #[test]
+    fn broken_references_counted_when_texture_removed() {
+        use crate::material;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        // Build a material from a set so a material_map slot references a texture.
+        for n in ["Slab_BaseColor_2K.png", "Slab_Normal_2K.png", "Slab_Roughness_2K.png"] {
+            let reg = MapTypeRegistry::builtin();
+            let a = analyze(&png(dir.path(), n, 128), &reg).unwrap();
+            let opts = ImportOptions {
+                managed: false,
+                library_root: None,
+                thumbnail_dir: dir.path().join("_t"),
+                generate_preview: false,
+                detect_maps: true,
+            };
+            import_texture(db.conn(), &a, &opts).unwrap();
+        }
+        texture::rebuild_texture_sets(db.conn()).unwrap();
+        let set = texture::list_texture_sets(db.conn()).unwrap().remove(0);
+        material::create_material_from_set(db.conn(), &set.id, None).unwrap();
+
+        assert_eq!(broken_reference_count(db.conn()).unwrap(), 0);
+
+        // Remove a texture the material references → its slot link is severed.
+        let a_tex = &set.maps[0].texture_id;
+        remove_asset(db.conn(), a_tex).unwrap();
+        assert_eq!(broken_reference_count(db.conn()).unwrap(), 1);
     }
 
     #[test]
