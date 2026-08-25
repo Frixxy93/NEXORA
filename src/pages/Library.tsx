@@ -82,7 +82,13 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
   const [udim, setUdim] = useState<UdimInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [visibleCount, setVisibleCount] = useState(REVEAL_STEP);
+  const [gridSize, setGridSize] = useState(200);
   const gridScrollRef = useRef<HTMLDivElement>(null);
+
+  // Card size comes from Settings ▸ Appearance (reloaded on remount per view).
+  useEffect(() => {
+    api.getSettings().then((s) => setGridSize(s.appearance.grid_size)).catch(() => {});
+  }, []);
 
   // Reset the window (and scroll to top) whenever the displayed set changes.
   useEffect(() => {
@@ -354,7 +360,7 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
           <div ref={gridScrollRef} onScroll={onGridScroll} className="flex-1 overflow-y-auto p-4">
             <div
               className="grid gap-3"
-              style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}
+              style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${gridSize}px, 1fr))` }}
             >
               {revealed.map((cell) =>
                 cell.t === "material" ? (

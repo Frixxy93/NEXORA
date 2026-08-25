@@ -460,18 +460,29 @@ fn run_import(app: &AppHandle, db: &Db, thumbnail_dir: PathBuf, paths: Vec<Strin
             },
         );
 
-        match texture::analyze(file, &registry)
-            .and_then(|a| texture::import_texture(conn, &a, &opts))
-        {
-            Ok(ImportOutcome::Imported { .. }) => report.imported += 1,
-            Ok(ImportOutcome::DuplicatePath { .. }) => report.duplicates += 1,
-            Ok(ImportOutcome::Skipped { .. }) => report.failed += 1,
+        match texture::analyze(file, &registry) {
+            Ok(a) => match texture::import_texture(conn, &a, &opts) {
+                Ok(ImportOutcome::Imported { id, .. }) => {
+                    report.imported += 1;
+                    // Auto-tag with the texture's category (its map type), when enabled.
+                    if settings.import.auto_tag {
+                        if let Some(mt) = a.map_type.as_deref() {
+                            let _ = library::add_tag(conn, &id, mt);
+                        }
+                    }
+                }
+                Ok(ImportOutcome::DuplicatePath { .. }) => report.duplicates += 1,
+                Ok(ImportOutcome::Skipped { .. }) => report.failed += 1,
+                Err(_) => report.failed += 1,
+            },
             Err(_) => report.failed += 1,
         }
     }
 
-    // Regroup texture sets now that new textures exist (spec §10).
-    let _ = texture::rebuild_texture_sets(conn);
+    // Regroup texture sets now that new textures exist (spec §10), if enabled.
+    if settings.import.auto_group_texture_sets {
+        let _ = texture::rebuild_texture_sets(conn);
+    }
 
     report
 }
@@ -618,10 +629,19 @@ pub fn import_material(app: AppHandle, state: State<AppState>, path: String) -> 
         if let Ok(result) =
             material::import_material_folder(conn, std::path::Path::new(&path), &opts, &registry)
         {
+            // Auto-tag the material with its category (e.g. "Wood"), when enabled.
+            if settings.import.auto_tag {
+                let cat = material::detect_category(&result.name);
+                if cat != "Other" {
+                    let _ = library::add_tag(conn, &result.id, &cat);
+                }
+            }
             let _ = app.emit("material:imported", &result.name);
         }
-        // Textures/sets changed too — regroup and refresh everything.
-        let _ = texture::rebuild_texture_sets(conn);
+        // Textures/sets changed too — regroup and refresh everything, if enabled.
+        if settings.import.auto_group_texture_sets {
+            let _ = texture::rebuild_texture_sets(conn);
+        }
         let _ = app.emit("library:changed", ());
     });
     Ok(())

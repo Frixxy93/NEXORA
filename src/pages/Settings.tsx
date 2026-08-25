@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, pickFolder, runningInTauri } from "../lib/api";
-import type { AppSettings, BridgeInfo, Renderer, ThemeMode } from "../lib/types";
+import type { AppSettings, BridgeInfo, Renderer } from "../lib/types";
 import {
   checkForUpdate,
   currentAppVersion,
@@ -151,12 +151,6 @@ export function Settings() {
           </div>
         </Field>
 
-        <Toggle
-          label="Auto-scan library folders"
-          checked={settings.library.auto_scan}
-          onChange={(v) => update((s) => (s.library.auto_scan = v))}
-        />
-
         <Field label="Texture details">
           <div className="flex items-center gap-2">
             <button className="btn-ghost whitespace-nowrap" onClick={recompute} disabled={recomputing}>
@@ -172,18 +166,6 @@ export function Settings() {
 
       {/* Appearance ------------------------------------------------------- */}
       <Section title="Appearance">
-        <Field label="Theme">
-          <div className="grid grid-cols-3 gap-2">
-            {(["dark", "light", "system"] as ThemeMode[]).map((t) => (
-              <ModeCard
-                key={t}
-                active={settings.appearance.theme === t}
-                title={t[0].toUpperCase() + t.slice(1)}
-                onClick={() => update((s) => (s.appearance.theme = t))}
-              />
-            ))}
-          </div>
-        </Field>
         <Field label={`Grid size — ${settings.appearance.grid_size}px`}>
           <input
             type="range"
@@ -316,21 +298,6 @@ export function Settings() {
           checked={settings.updates.check_on_startup}
           onChange={(v) => update((s) => (s.updates.check_on_startup = v))}
         />
-        <Field label="Channel">
-          <div className="grid grid-cols-2 gap-2">
-            <ModeCard
-              active={settings.updates.channel === "stable"}
-              title="Stable"
-              onClick={() => update((s) => (s.updates.channel = "stable"))}
-            />
-            <ModeCard
-              active={settings.updates.channel === "beta"}
-              title="Beta"
-              onClick={() => update((s) => (s.updates.channel = "beta"))}
-            />
-          </div>
-        </Field>
-
         <div className="border-t border-line pt-4">
           <UpdatePanel />
         </div>
