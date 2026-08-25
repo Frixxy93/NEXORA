@@ -59,6 +59,7 @@ export interface SyncProgress {
   bytes: number;
   finished: boolean;
   error: string | null;
+  last_error?: string | null;
 }
 
 export interface DiscoverStatus {

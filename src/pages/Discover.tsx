@@ -166,8 +166,8 @@ export function Discover() {
         </div>
         <div className="text-[11px] text-warn leading-relaxed mt-3">
           Heads up: syncing the whole catalog is thousands of assets. At 1K that's roughly tens of
-          GB; 4K is much larger. It runs in the background, skips anything already downloaded, and
-          you can stop it any time.
+          GB; 4K is much larger. It runs in the background (several downloads at once, retrying
+          transient errors), skips anything already downloaded, and you can stop it any time.
         </div>
       </section>
 
@@ -211,6 +211,11 @@ export function Discover() {
             <div className="text-[11px] text-muted mt-1 tabular-nums">
               {progress.imported} imported · {progress.skipped} skipped · {progress.failed} failed
             </div>
+            {progress.failed > 0 && progress.last_error && (
+              <div className="text-[11px] text-muted mt-1 truncate">
+                Last failure: {progress.last_error}
+              </div>
+            )}
           </div>
         )}
 

@@ -15,11 +15,19 @@ use crate::texture::ImportOptions;
 use crate::{CoreError, Result};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 pub const SOURCE_POLYHAVEN: &str = "polyhaven";
 pub const SOURCE_AMBIENTCG: &str = "ambientcg";
+
+/// Concurrent download workers. Downloads are network-bound; a handful of
+/// parallel fetches is a big speedup while staying polite to the free CC0 hosts.
+const CONCURRENCY: usize = 5;
+
+/// How many times to attempt a single asset before giving up (transient network
+/// errors are common on a long bulk sync).
+const MAX_ATTEMPTS: u32 = 3;
 
 /// Progress snapshot for a running or just-finished sync, surfaced to the UI.
 #[derive(Debug, Clone, Serialize, Default)]
@@ -34,7 +42,10 @@ pub struct SyncProgress {
     pub current: String,
     pub bytes: u64,
     pub finished: bool,
+    /// A fatal error that stopped the whole run (e.g. no library configured).
     pub error: Option<String>,
+    /// The most recent per-asset failure (non-fatal; the run continues).
+    pub last_error: Option<String>,
 }
 
 /// Inputs for a sync run.
@@ -166,14 +177,86 @@ fn collect_jobs(opts: &SyncOptions) -> Result<Vec<Job>> {
     Ok(jobs)
 }
 
+/// Lock the shared progress, tolerating a poisoned mutex.
+fn plock(m: &Mutex<SyncProgress>) -> MutexGuard<'_, SyncProgress> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A structural failure that retrying can't fix (the asset simply has nothing to
+/// download), versus a transient network error worth retrying.
+fn is_permanent(msg: &str) -> bool {
+    msg.contains("no downloadable maps") || msg.contains("no map images")
+}
+
+/// Run `f` up to [`MAX_ATTEMPTS`] times, backing off between tries. Stops early
+/// on a permanent error, when asked to stop, or once attempts are exhausted.
+fn with_retry<F: FnMut() -> Result<u64>>(mut f: F, stop: &AtomicBool) -> Result<u64> {
+    let mut attempt = 0u32;
+    loop {
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                attempt += 1;
+                if attempt >= MAX_ATTEMPTS
+                    || stop.load(Ordering::Relaxed)
+                    || is_permanent(&e.to_string())
+                {
+                    return Err(e);
+                }
+                // Exponential backoff: 400ms, then 800ms.
+                std::thread::sleep(std::time::Duration::from_millis(400u64 << (attempt - 1)));
+            }
+        }
+    }
+}
+
+/// Download one asset's files into `dir` and import it as a material (brief DB
+/// lock), returning the bytes downloaded. Called under [`with_retry`].
+#[allow(clippy::too_many_arguments)]
+fn download_and_import(
+    job: &Job,
+    db: &Mutex<Database>,
+    dir: &std::path::Path,
+    ph_agent: &ureq::Agent,
+    acg_agent: &ureq::Agent,
+    resolution: &str,
+    import_opts: &ImportOptions,
+    registry: &crate::maptypes::MapTypeRegistry,
+) -> Result<u64> {
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir)?;
+    let bytes = match job {
+        Job::PolyHaven { id } => {
+            let plan = polyhaven::download_plan(ph_agent, id, resolution)?;
+            if plan.is_empty() {
+                return Err(CoreError::Provider(format!("{id}: no downloadable maps")));
+            }
+            let mut bytes = 0u64;
+            for f in &plan {
+                let data = polyhaven::download_bytes(ph_agent, &f.url)?;
+                bytes += data.len() as u64;
+                std::fs::write(dir.join(&f.filename), &data)?;
+            }
+            bytes
+        }
+        Job::AmbientCg { url, .. } => ambientcg::download_and_extract(acg_agent, url, dir)?,
+    };
+    {
+        let guard = lock(db);
+        crate::material::import_material_folder(guard.conn(), dir, import_opts, registry)?;
+        mark_synced(guard.conn(), job.source(), job.id())?;
+    }
+    Ok(bytes)
+}
+
 /// Run the Discover auto-sync across all enabled sources: download every catalog
 /// texture (skipping ones already imported) at the chosen resolution and import
 /// each as a material.
 ///
-/// The DB mutex is locked only for brief operations — never while downloading —
-/// so the app stays responsive. `stop` is checked between assets; `on_progress`
-/// is invoked after each. Individual asset failures are counted and skipped, not
-/// fatal.
+/// Downloads run across [`CONCURRENCY`] worker threads (network-bound), each
+/// retrying transient failures with backoff. The DB mutex is locked only for the
+/// brief import/skip checks — never while downloading — so the app stays
+/// responsive and imports stay serialized. `stop` is honored between assets.
 pub fn run_sync(
     db: &Mutex<Database>,
     opts: &SyncOptions,
@@ -219,78 +302,151 @@ pub fn run_sync(
     let tmp = std::env::temp_dir().join("nexora-discover");
     let _ = std::fs::create_dir_all(&tmp);
 
-    let mut p = SyncProgress {
+    let progress = Mutex::new(SyncProgress {
         running: true,
         total: jobs.len(),
         ..Default::default()
-    };
-    on_progress(&p);
+    });
+    on_progress(&plock(&progress).clone());
 
-    for job in &jobs {
-        if stop.load(Ordering::Relaxed) {
-            break;
-        }
-        let source = job.source();
-        let id = job.id().to_string();
-        p.current = format!("{source}: {id}");
+    // Shared cursor into the job list; workers claim indices atomically.
+    let next = AtomicUsize::new(0);
+    let workers = CONCURRENCY.min(jobs.len().max(1));
 
-        // Skip assets already in the library.
-        if already_synced(lock(db).conn(), source, &id) {
-            p.skipped += 1;
-            p.done += 1;
-            on_progress(&p);
-            continue;
-        }
-
-        // Download (unlocked) then import (brief lock). Temp dir is
-        // source-prefixed so ids can't collide across libraries.
-        let dir = tmp.join(format!("{source}_{id}"));
-        let outcome = (|| -> Result<u64> {
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir)?;
-            let bytes = match job {
-                Job::PolyHaven { id } => {
-                    let plan = polyhaven::download_plan(&ph_agent, id, &opts.resolution)?;
-                    if plan.is_empty() {
-                        return Err(CoreError::Provider(format!("{id}: no downloadable maps")));
-                    }
-                    let mut bytes = 0u64;
-                    for f in &plan {
-                        let data = polyhaven::download_bytes(&ph_agent, &f.url)?;
-                        bytes += data.len() as u64;
-                        std::fs::write(dir.join(&f.filename), &data)?;
-                    }
-                    bytes
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
                 }
-                Job::AmbientCg { url, .. } => {
-                    ambientcg::download_and_extract(&acg_agent, url, &dir)?
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= jobs.len() {
+                    break;
                 }
-            };
-            {
-                let guard = lock(db);
-                crate::material::import_material_folder(guard.conn(), &dir, &import_opts, &registry)?;
-                mark_synced(guard.conn(), source, &id)?;
-            }
-            Ok(bytes)
-        })();
-        let _ = std::fs::remove_dir_all(&dir);
+                let job = &jobs[i];
+                let source = job.source();
+                let id = job.id();
 
-        match outcome {
-            Ok(b) => {
-                p.imported += 1;
-                p.bytes += b;
-            }
-            Err(_) => {
-                p.failed += 1;
-            }
+                // Skip assets already in the library (brief lock).
+                if already_synced(lock(db).conn(), source, id) {
+                    let snap = {
+                        let mut p = plock(&progress);
+                        p.skipped += 1;
+                        p.done += 1;
+                        p.current = format!("{source}: {id}");
+                        p.clone()
+                    };
+                    on_progress(&snap);
+                    continue;
+                }
+
+                // Temp dir is source-prefixed so ids can't collide across sources.
+                let dir = tmp.join(format!("{source}_{id}"));
+                let outcome = with_retry(
+                    || {
+                        download_and_import(
+                            job,
+                            db,
+                            &dir,
+                            &ph_agent,
+                            &acg_agent,
+                            &opts.resolution,
+                            &import_opts,
+                            &registry,
+                        )
+                    },
+                    stop,
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+
+                let snap = {
+                    let mut p = plock(&progress);
+                    match &outcome {
+                        Ok(b) => {
+                            p.imported += 1;
+                            p.bytes += b;
+                        }
+                        Err(e) => {
+                            p.failed += 1;
+                            p.last_error = Some(format!("{id}: {e}"));
+                        }
+                    }
+                    p.done += 1;
+                    p.current = format!("{source}: {id}");
+                    p.clone()
+                };
+                on_progress(&snap);
+            });
         }
-        p.done += 1;
-        on_progress(&p);
+    });
+
+    let mut final_p = progress.into_inner().unwrap_or_else(|e| e.into_inner());
+    final_p.running = false;
+    final_p.finished = true;
+    final_p.current.clear();
+    on_progress(&final_p);
+    Ok(final_p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn is_permanent_classifies_errors() {
+        assert!(is_permanent("rock_wall: no downloadable maps"));
+        assert!(is_permanent("no map images in bundle"));
+        assert!(!is_permanent("connection reset by peer"));
+        assert!(!is_permanent("download: timed out"));
     }
 
-    p.running = false;
-    p.finished = true;
-    p.current.clear();
-    on_progress(&p);
-    Ok(p)
+    #[test]
+    fn retry_does_not_retry_permanent_errors() {
+        let calls = Cell::new(0u32);
+        let stop = AtomicBool::new(false);
+        let r = with_retry(
+            || {
+                calls.set(calls.get() + 1);
+                Err(CoreError::Provider("no map images in bundle".into()))
+            },
+            &stop,
+        );
+        assert!(r.is_err());
+        assert_eq!(calls.get(), 1, "permanent errors must not be retried");
+    }
+
+    #[test]
+    fn retry_recovers_from_a_transient_failure() {
+        let calls = Cell::new(0u32);
+        let stop = AtomicBool::new(false);
+        let r = with_retry(
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() < 2 {
+                    Err(CoreError::Provider("temporary network blip".into()))
+                } else {
+                    Ok(1234)
+                }
+            },
+            &stop,
+        );
+        assert_eq!(r.unwrap(), 1234);
+        assert_eq!(calls.get(), 2, "should retry once then succeed");
+    }
+
+    #[test]
+    fn retry_gives_up_after_max_attempts() {
+        let calls = Cell::new(0u32);
+        let stop = AtomicBool::new(false);
+        let r = with_retry(
+            || {
+                calls.set(calls.get() + 1);
+                Err(CoreError::Provider("always fails".into()))
+            },
+            &stop,
+        );
+        assert!(r.is_err());
+        assert_eq!(calls.get(), MAX_ATTEMPTS, "should try exactly MAX_ATTEMPTS times");
+    }
 }
