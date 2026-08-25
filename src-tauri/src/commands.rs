@@ -991,6 +991,32 @@ pub fn remove_assets(app: AppHandle, state: State<AppState>, ids: Vec<String>) -
     Ok(())
 }
 
+/// Textures whose backing file is missing from disk (for the Missing Files view).
+#[tauri::command]
+pub fn list_missing_files(
+    state: State<AppState>,
+) -> Result<Vec<nexora_core::library::MissingTexture>, String> {
+    let db = state.db.lock().map_err(e)?;
+    library::list_missing_textures(db.conn()).map_err(e)
+}
+
+/// Relink a texture whose file moved to a new location the user picks.
+#[tauri::command]
+pub fn relink_texture(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+    path: String,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(e)?;
+        let registry = MapTypeRegistry::builtin();
+        library::relink_texture(db.conn(), &id, &path, &registry).map_err(e)?;
+    }
+    let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
 /// Favorited materials + textures (spec §21).
 #[tauri::command]
 pub fn list_favorites(state: State<AppState>) -> Result<MixedAssets, String> {

@@ -8,11 +8,12 @@ import { TextureSetInspector } from "../components/TextureSetInspector";
 import { MaterialCard } from "../components/MaterialCard";
 import { MaterialInspector } from "../components/MaterialInspector";
 import { VIEW_META, type View } from "../lib/nav";
-import { api, onImportDone, onLibraryChanged, pickFiles, pickFolder } from "../lib/api";
+import { api, onImportDone, onLibraryChanged, pickFile, pickFiles, pickFolder } from "../lib/api";
 import type {
   CollectionDto,
   DuplicateGroup,
   MaterialDto,
+  MissingTexture,
   MixedAssets,
   TextureDto,
   TextureSetDto,
@@ -28,6 +29,7 @@ type Kind =
   | { t: "materials-renderer"; renderer: string }
   | { t: "mixed"; source: "favorites" | "recent_added" | "recent_used" }
   | { t: "duplicates" }
+  | { t: "missing_files" }
   | { t: "collections" }
   | null;
 
@@ -43,6 +45,7 @@ function viewKind(view: View): Kind {
   if (view === "smart.recent_added") return { t: "mixed", source: "recent_added" };
   if (view === "smart.recent_used") return { t: "mixed", source: "recent_used" };
   if (view === "smart.duplicates") return { t: "duplicates" };
+  if (view === "smart.missing_files") return { t: "missing_files" };
   if (view === "collections") return { t: "collections" };
   return null;
 }
@@ -111,6 +114,8 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
 
   const load = useCallback(() => {
     if (!kind) return;
+    // The Missing Files view fetches its own data.
+    if (kind.t === "missing_files") return;
     setLoading(true);
     const done = () => setLoading(false);
     if (kind.t === "collections") {
@@ -371,7 +376,9 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
           <div className="ml-auto flex items-center gap-2">{headerActions}</div>
         </div>
 
-        {kind.t === "duplicates" ? (
+        {kind.t === "missing_files" ? (
+          <MissingFilesView />
+        ) : kind.t === "duplicates" ? (
           <DuplicatesView
             groups={duplicates}
             loading={loading}
@@ -559,6 +566,75 @@ function NewCollectionButton({ onCreated }: { onCreated: () => void }) {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function MissingFilesView() {
+  const [items, setItems] = useState<MissingTexture[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = () => api.listMissingFiles().then(setItems).catch(() => setItems([]));
+  useEffect(() => {
+    load();
+    let un: (() => void) | undefined;
+    onLibraryChanged(() => load()).then((u) => (un = u));
+    return () => un?.();
+  }, []);
+
+  const relink = async (t: MissingTexture) => {
+    const path = await pickFile();
+    if (!path) return;
+    setBusy(t.id);
+    try {
+      await api.relinkTexture(t.id, path);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setBusy(null);
+      load();
+    }
+  };
+
+  if (!items)
+    return <div className="flex-1 flex items-center justify-center text-muted text-sm">Loading…</div>;
+  if (items.length === 0)
+    return (
+      <EmptyState
+        icon="check"
+        title="No missing files"
+        hint="Every texture's file is where NEXORA expects it. If a file is moved or renamed, it shows up here so you can point NEXORA at its new location."
+      />
+    );
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4 space-y-2">
+      <div className="text-[11px] text-muted mb-1">
+        {items.length} texture{items.length === 1 ? "" : "s"} can't be found on disk. Relinking
+        updates the path — your files are never moved or deleted.
+      </div>
+      {items.map((t) => (
+        <div key={t.id} className="flex items-center gap-3 panel px-4 py-3">
+          <span className="text-bad shrink-0">
+            <Icon name="warning" size={16} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm text-slate-200 truncate">
+              {t.name}
+              {t.is_udim ? " · UDIM" : ""}
+            </div>
+            <div className="text-[11px] text-muted font-mono truncate">{t.file_path}</div>
+          </div>
+          <button
+            className="btn-ghost text-xs shrink-0"
+            disabled={busy === t.id || t.is_udim}
+            onClick={() => relink(t)}
+            title={t.is_udim ? "UDIM sets can't be relinked to a single file" : "Pick the new file"}
+          >
+            {busy === t.id ? "…" : t.is_udim ? "UDIM" : "Relink…"}
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

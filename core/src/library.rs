@@ -459,6 +459,54 @@ pub fn broken_reference_count(conn: &Connection) -> Result<i64> {
     )?)
 }
 
+/// Relink a texture to a new file location (its file was moved/renamed). Points
+/// the record at `new_path` and refreshes the size-dependent metadata (dimensions,
+/// format, channels, size, content hash) from the new file — but keeps the
+/// existing map type, so this only fixes the path, never reclassifies. Non-UDIM
+/// textures only (a UDIM parent is a `<UDIM>` pattern, not a single file).
+pub fn relink_texture(conn: &Connection, id: &str, new_path: &str, registry: &crate::maptypes::MapTypeRegistry) -> Result<()> {
+    let p = std::path::Path::new(new_path);
+    if !p.exists() {
+        return Err(crate::CoreError::Config("That file doesn't exist.".into()));
+    }
+    let is_udim: bool = conn
+        .query_row(
+            "SELECT is_udim FROM textures WHERE asset_id = ?1",
+            [id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|v| v != 0)
+        .unwrap_or(false);
+    if is_udim {
+        return Err(crate::CoreError::Config(
+            "UDIM sets can't be relinked to a single file.".into(),
+        ));
+    }
+
+    // Re-analyze the new file to refresh accurate metadata (keep the map type).
+    let a = crate::texture::analyze(p, registry)?;
+    conn.execute(
+        "UPDATE textures
+         SET file_path = ?2, width = ?3, height = ?4, format = ?5, channels = ?6,
+             file_size = ?7, modified_at = strftime('%s','now')
+         WHERE asset_id = ?1",
+        params![
+            id,
+            new_path,
+            a.width,
+            a.height,
+            a.format,
+            a.channels,
+            a.file_size as i64,
+        ],
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO file_hashes (texture_id, hash, algo) VALUES (?1, ?2, 'blake3')",
+        params![id, a.hash],
+    )?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Inline metadata editing (spec §23/§24) — rename, recategorize, fix map type
 // ---------------------------------------------------------------------------
@@ -680,6 +728,32 @@ mod tests {
         let miss = list_missing_textures(db.conn()).unwrap();
         assert_eq!(miss.len(), 1);
         assert_eq!(miss[0].id, id);
+    }
+
+    #[test]
+    fn relink_points_texture_at_new_file() {
+        use crate::maptypes::MapTypeRegistry;
+        use crate::texture;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let id = import(&db, dir.path(), "brick_basecolor.png", 100);
+        let orig = dir.path().join("brick_basecolor.png");
+
+        // Move the file to a new location and delete the original.
+        let moved = dir.path().join("moved").join("brick_basecolor.png");
+        std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        std::fs::rename(&orig, &moved).unwrap();
+        assert_eq!(missing_file_count(db.conn()).unwrap(), 1);
+
+        // Relink → no longer missing, path updated.
+        let reg = MapTypeRegistry::builtin();
+        relink_texture(db.conn(), &id, moved.to_str().unwrap(), &reg).unwrap();
+        assert_eq!(missing_file_count(db.conn()).unwrap(), 0);
+        let t = texture::get_texture(db.conn(), &id).unwrap().unwrap();
+        assert_eq!(t.file_path, moved.to_string_lossy());
+
+        // Relinking to a nonexistent path is rejected.
+        assert!(relink_texture(db.conn(), &id, "/no/such/file.png", &reg).is_err());
     }
 
     #[test]

@@ -63,6 +63,7 @@ export const NAV: NavGroup[] = [
       { id: "smart.recent_used", label: "Recently Used", icon: "clock" },
       { id: "smart.recent_added", label: "Recently Added", icon: "plus" },
       { id: "smart.missing", label: "Missing Maps", icon: "warning" },
+      { id: "smart.missing_files", label: "Missing Files", icon: "warning" },
       { id: "smart.duplicates", label: "Duplicates", icon: "copy" },
     ],
   },
@@ -97,6 +98,7 @@ export const VIEW_META: Record<string, { title: string; subtitle: string }> = {
   "smart.recent_used": { title: "Recently Used", subtitle: "Sent to Maya or applied" },
   "smart.recent_added": { title: "Recently Added", subtitle: "Newest imports" },
   "smart.missing": { title: "Missing Maps", subtitle: "Materials with incomplete map sets" },
+  "smart.missing_files": { title: "Missing Files", subtitle: "Textures whose file moved or is gone" },
   "smart.duplicates": { title: "Duplicates", subtitle: "Assets with identical content hashes" },
   collections: { title: "Collections", subtitle: "Virtual groups of assets" },
 };

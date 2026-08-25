@@ -77,6 +77,13 @@ export interface CatalogAsset {
   synced: boolean;
 }
 
+export interface MissingTexture {
+  id: string;
+  name: string;
+  file_path: string;
+  is_udim: boolean;
+}
+
 export interface PluginInstallResult {
   installed: string[];
   skipped: string[];

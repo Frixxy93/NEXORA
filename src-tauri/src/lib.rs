@@ -182,6 +182,8 @@ pub fn run() {
             commands::add_to_collection_many,
             commands::remove_assets,
             commands::scan_library,
+            commands::list_missing_files,
+            commands::relink_texture,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXORA");

@@ -19,6 +19,7 @@ import type {
   MaterialDto,
   MaterialMapDto,
   MayaStatus,
+  MissingTexture,
   MixedAssets,
   PluginInstallResult,
   SyncProgress,
@@ -218,6 +219,11 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
     case "recompute_metadata":
       return undefined as unknown as T;
     case "scan_library":
+      return undefined as unknown as T;
+    case "list_missing_files":
+      return [] as unknown as T;
+    case "relink_texture":
+      fireLibraryChanged();
       return undefined as unknown as T;
     case "get_app_settings":
       return mockSettings as unknown as T;
@@ -673,6 +679,8 @@ export const api = {
   rebuildTextureSets: () => call<number>("rebuild_texture_sets"),
   recomputeMetadata: () => call<void>("recompute_metadata"),
   scanLibrary: () => call<void>("scan_library"),
+  listMissingFiles: () => call<MissingTexture[]>("list_missing_files"),
+  relinkTexture: (id: string, path: string) => call<void>("relink_texture", { id, path }),
   getUdimInfo: (id: string) => call<UdimInfo>("get_udim_info", { id }),
 
   // Phase 4
@@ -858,6 +866,21 @@ export async function copyToClipboard(text: string): Promise<void> {
   } catch {
     console.info("[clipboard] copy:", text);
   }
+}
+
+/** Pick a single texture file (used to relink a missing file). */
+export async function pickFile(): Promise<string | null> {
+  if (isTauri) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const result = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Textures", extensions: IMAGE_EXTS }],
+    });
+    return typeof result === "string" ? result : null;
+  }
+  const entered = window.prompt("New file path");
+  return entered && entered.trim() ? entered.trim() : null;
 }
 
 /** Pick a folder (import recursively / library location). */
