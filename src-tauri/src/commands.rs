@@ -719,6 +719,49 @@ pub fn set_favorite(
     Ok(())
 }
 
+/// Rename an asset (inline edit in the inspector).
+#[tauri::command]
+pub fn rename_asset(app: AppHandle, state: State<AppState>, id: String, name: String) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(e)?;
+        library::rename_asset(db.conn(), &id, &name).map_err(e)?;
+    }
+    let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
+/// Set an asset's category (e.g. a material's "Wood").
+#[tauri::command]
+pub fn set_asset_category(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+    category: String,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(e)?;
+        library::set_category(db.conn(), &id, &category).map_err(e)?;
+    }
+    let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
+/// Correct a texture's map type (`None` unclassifies it).
+#[tauri::command]
+pub fn set_texture_map_type(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+    map_type: Option<String>,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(e)?;
+        library::set_texture_map_type(db.conn(), &id, map_type.as_deref()).map_err(e)?;
+    }
+    let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
 /// Favorited materials + textures (spec §21).
 #[tauri::command]
 pub fn list_favorites(state: State<AppState>) -> Result<MixedAssets, String> {

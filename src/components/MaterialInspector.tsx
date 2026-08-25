@@ -2,13 +2,21 @@ import { useState } from "react";
 import type { MaterialDto } from "../lib/types";
 import { mapLabel } from "../lib/format";
 import { Icon } from "./Icon";
+import { api } from "../lib/api";
 import {
   CollectionMenu,
+  EditableName,
+  EditableSelect,
   FavoriteStar,
   RemoveButton,
   SendToMayaButton,
   TagEditor,
 } from "./LibraryControls";
+
+const CATEGORY_OPTIONS = [
+  "Concrete", "Wood", "Metal", "Stone", "Brick", "Plaster", "Tile", "Fabric",
+  "Leather", "Plastic", "Glass", "Rubber", "Ground", "Organic", "Sci-Fi", "Other",
+].map((c) => ({ value: c, label: c }));
 import { MaterialPreview } from "./MaterialPreview";
 import { MaterialPreviewModal } from "./MaterialPreviewModal";
 import { useMaterialMaps } from "../lib/useMaterialMaps";
@@ -46,9 +54,19 @@ export function MaterialInspector({ material }: { material: MaterialDto }) {
           <span className="text-[11px] uppercase tracking-wider text-muted">Material</span>
           <FavoriteStar id={material.id} favorite={material.favorite} />
         </div>
-        <Row label="Name" value={material.name} />
+        <div>
+          <div className="field-label">Name</div>
+          <EditableName id={material.id} name={material.name} />
+        </div>
         <Row label="Type" value="Material" />
-        <Row label="Category" value={material.category ?? "Other"} />
+        <div>
+          <div className="field-label">Category</div>
+          <EditableSelect
+            value={material.category ?? "Other"}
+            options={CATEGORY_OPTIONS}
+            onSave={(v) => api.setAssetCategory(material.id, v)}
+          />
+        </div>
         <Row label="Resolution" value={material.resolution ?? "—"} />
         <Row label="PBR" value={material.is_pbr ? "Yes" : "No"} />
         <Row label="UDIM" value={material.is_udim ? "Yes" : "No"} />

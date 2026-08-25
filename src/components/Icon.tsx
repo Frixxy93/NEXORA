@@ -19,7 +19,8 @@ export type IconName =
   | "maya"
   | "check"
   | "chevron"
-  | "download";
+  | "download"
+  | "edit";
 
 const paths: Record<IconName, JSX.Element> = {
   home: <path d="M3 10.5 12 3l9 7.5M5 9.5V21h14V9.5" />,
@@ -72,6 +73,7 @@ const paths: Record<IconName, JSX.Element> = {
   check: <path d="m5 12 5 5 9-11" />,
   chevron: <path d="m9 6 6 6-6 6" />,
   download: <path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />,
+  edit: <path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3z" />,
 };
 
 export function Icon({

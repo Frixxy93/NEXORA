@@ -3,6 +3,110 @@ import { api } from "../lib/api";
 import type { CollectionDto, TagDto } from "../lib/types";
 import { Icon } from "./Icon";
 
+// Inline-editable asset name (spec §23/§24). Shows the name with a pencil; click
+// to edit, Enter/blur saves, Escape cancels. The backend emits library:changed
+// so the grid + inspector refresh with the canonical value.
+export function EditableName({ id, name }: { id: string; name: string }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(name);
+  useEffect(() => setVal(name), [name, id]);
+
+  const save = async () => {
+    setEditing(false);
+    const next = val.trim();
+    if (!next || next === name) {
+      setVal(name);
+      return;
+    }
+    try {
+      await api.renameAsset(id, next);
+    } catch (err) {
+      console.error(err);
+      setVal(name);
+    }
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        className="input text-sm py-1"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") {
+            setVal(name);
+            setEditing(false);
+          }
+        }}
+      />
+    );
+  }
+  return (
+    <div className="group/name flex items-center gap-1.5">
+      <span className="text-sm text-slate-200 break-words">{name}</span>
+      <button
+        className="shrink-0 text-muted hover:text-slate-200 opacity-0 group-hover/name:opacity-100 transition-opacity"
+        onClick={() => setEditing(true)}
+        title="Rename"
+      >
+        <Icon name="edit" size={13} />
+      </button>
+    </div>
+  );
+}
+
+// Inline dropdown for a metadata field (map type, category). Saves on change.
+export function EditableSelect({
+  value,
+  options,
+  onSave,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onSave: (value: string) => Promise<void>;
+}) {
+  const [val, setVal] = useState(value);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setVal(value), [value]);
+
+  const change = async (next: string) => {
+    setVal(next);
+    setBusy(true);
+    try {
+      await onSave(next);
+    } catch (err) {
+      console.error(err);
+      setVal(value);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Always render the current value, even if it isn't one of the known options
+  // (e.g. a custom map type), so the dropdown never silently misrepresents it.
+  const opts = options.some((o) => o.value === val)
+    ? options
+    : [{ value: val, label: val }, ...options];
+
+  return (
+    <select
+      className="input text-sm py-1 disabled:opacity-60"
+      value={val}
+      disabled={busy}
+      onChange={(e) => change(e.target.value)}
+    >
+      {opts.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 // Favorite toggle star (spec §21). Optimistic; the backend emits library:changed
 // so grids refresh on their own.
 export function FavoriteStar({ id, favorite }: { id: string; favorite: boolean }) {

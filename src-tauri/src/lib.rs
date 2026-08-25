@@ -130,6 +130,9 @@ pub fn run() {
             commands::stop_discover_sync,
             commands::get_discover_status,
             commands::recompute_metadata,
+            commands::rename_asset,
+            commands::set_asset_category,
+            commands::set_texture_map_type,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXORA");

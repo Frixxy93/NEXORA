@@ -460,6 +460,49 @@ pub fn broken_reference_count(conn: &Connection) -> Result<i64> {
 }
 
 // ---------------------------------------------------------------------------
+// Inline metadata editing (spec §23/§24) — rename, recategorize, fix map type
+// ---------------------------------------------------------------------------
+
+/// Rename an asset (material or texture). The FTS index is kept in step by the
+/// `assets` update trigger, so search reflects the new name immediately.
+pub fn rename_asset(conn: &Connection, id: &str, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(crate::CoreError::Config("Name cannot be empty.".into()));
+    }
+    conn.execute(
+        "UPDATE assets SET name = ?2, updated_at = strftime('%s','now') WHERE id = ?1",
+        params![id, name],
+    )?;
+    Ok(())
+}
+
+/// Set an asset's category (e.g. a material's "Wood"/"Metal"). FTS reindexes via
+/// the update trigger.
+pub fn set_category(conn: &Connection, id: &str, category: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE assets SET category = ?2, updated_at = strftime('%s','now') WHERE id = ?1",
+        params![id, category],
+    )?;
+    Ok(())
+}
+
+/// Correct a texture's map type (fixes a mis-detected import). `None` unclassifies
+/// it. The asset's category is kept in step with the map type, matching the
+/// import convention, so the type sidebar filters and the category stay coherent.
+pub fn set_texture_map_type(conn: &Connection, id: &str, map_type: Option<&str>) -> Result<()> {
+    conn.execute(
+        "UPDATE textures SET map_type = ?2 WHERE asset_id = ?1",
+        params![id, map_type],
+    )?;
+    conn.execute(
+        "UPDATE assets SET category = ?2, updated_at = strftime('%s','now') WHERE id = ?1",
+        params![id, map_type.unwrap_or("other")],
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Remove from library (spec §26 — never touches the user's actual files)
 // ---------------------------------------------------------------------------
 
@@ -667,6 +710,34 @@ mod tests {
         let a_tex = &set.maps[0].texture_id;
         remove_asset(db.conn(), a_tex).unwrap();
         assert_eq!(broken_reference_count(db.conn()).unwrap(), 1);
+    }
+
+    #[test]
+    fn edit_metadata_rename_recategorize_and_fix_map_type() {
+        use crate::texture;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let id = import(&db, dir.path(), "old_photo.png", 100); // no map token detected
+
+        // Rename → reflected in the record and in search (FTS trigger).
+        rename_asset(db.conn(), &id, "Rusty Panel").unwrap();
+        assert_eq!(texture::get_texture(db.conn(), &id).unwrap().unwrap().name, "Rusty Panel");
+        assert_eq!(search(db.conn(), "rusty").unwrap().textures.len(), 1);
+
+        // Empty rename is rejected.
+        assert!(rename_asset(db.conn(), &id, "   ").is_err());
+
+        // Fix map type → map_type and category move together.
+        set_texture_map_type(db.conn(), &id, Some("normal")).unwrap();
+        let t = texture::get_texture(db.conn(), &id).unwrap().unwrap();
+        assert_eq!(t.map_type.as_deref(), Some("normal"));
+        assert_eq!(t.category.as_deref(), Some("normal"));
+
+        // Unclassify → map_type cleared, category falls back to "other".
+        set_texture_map_type(db.conn(), &id, None).unwrap();
+        let t = texture::get_texture(db.conn(), &id).unwrap().unwrap();
+        assert_eq!(t.map_type, None);
+        assert_eq!(t.category.as_deref(), Some("other"));
     }
 
     #[test]

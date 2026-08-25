@@ -372,6 +372,28 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       fireLibraryChanged();
       return undefined as unknown as T;
     }
+    case "rename_asset": {
+      const a = findAsset(args?.id);
+      if (a) a.name = String(args?.name);
+      fireLibraryChanged();
+      return undefined as unknown as T;
+    }
+    case "set_asset_category": {
+      const a = findAsset(args?.id) as { category?: string | null } | undefined;
+      if (a) a.category = String(args?.category);
+      fireLibraryChanged();
+      return undefined as unknown as T;
+    }
+    case "set_texture_map_type": {
+      const t = mockTextures.find((x) => x.id === String(args?.id));
+      if (t) {
+        const mt = (args?.mapType as string | null) ?? null;
+        t.map_type = mt;
+        t.category = mt ?? "other";
+      }
+      fireLibraryChanged();
+      return undefined as unknown as T;
+    }
     case "list_favorites":
       return {
         materials: mockMaterials.filter((m) => m.favorite),
@@ -583,6 +605,11 @@ export const api = {
   // Phase 5
   search: (query: string) => call<SearchResults>("search", { query }),
   setFavorite: (id: string, favorite: boolean) => call<void>("set_favorite", { id, favorite }),
+  renameAsset: (id: string, name: string) => call<void>("rename_asset", { id, name }),
+  setAssetCategory: (id: string, category: string) =>
+    call<void>("set_asset_category", { id, category }),
+  setTextureMapType: (id: string, mapType: string | null) =>
+    call<void>("set_texture_map_type", { id, mapType }),
   listFavorites: () => call<MixedAssets>("list_favorites"),
   listRecentAdded: () => call<MixedAssets>("list_recent_added"),
   listRecentUsed: () => call<MixedAssets>("list_recent_used"),

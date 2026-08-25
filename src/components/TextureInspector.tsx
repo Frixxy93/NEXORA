@@ -4,12 +4,35 @@ import { formatBytes, mapLabel, resolutionLabel } from "../lib/format";
 import { api, copyToClipboard, dirname, openPath, revealInExplorer } from "../lib/api";
 import {
   CollectionMenu,
+  EditableName,
+  EditableSelect,
   FavoriteStar,
   RemoveButton,
   SendToMayaButton,
   TagEditor,
 } from "./LibraryControls";
 import { Icon } from "./Icon";
+
+// Map-type choices for the inspector dropdown; "other" clears the classification.
+const MAP_TYPE_OPTIONS = [
+  { value: "base_color", label: "Base Color" },
+  { value: "roughness", label: "Roughness" },
+  { value: "glossiness", label: "Glossiness" },
+  { value: "metallic", label: "Metallic" },
+  { value: "normal", label: "Normal" },
+  { value: "height", label: "Height" },
+  { value: "displacement", label: "Displacement" },
+  { value: "bump", label: "Bump" },
+  { value: "ao", label: "Ambient Occlusion" },
+  { value: "specular", label: "Specular" },
+  { value: "opacity", label: "Opacity" },
+  { value: "emission", label: "Emission" },
+  { value: "transmission", label: "Transmission" },
+  { value: "thickness", label: "Thickness" },
+  { value: "mask", label: "Mask" },
+  { value: "id", label: "ID" },
+  { value: "other", label: "Other / Unclassified" },
+];
 
 // Right-side inspector for a selected texture (spec §23). When the texture is a
 // UDIM set, `udim` carries its tile coverage (spec §12).
@@ -47,8 +70,22 @@ export function TextureInspector({
           <span className="text-[11px] uppercase tracking-wider text-muted">Texture</span>
           <FavoriteStar id={texture.id} favorite={texture.favorite} />
         </div>
-        <Row label="Name" value={texture.name} />
-        <Row label="Type" value={mapLabel(texture.map_type)} />
+        <div>
+          <div className="field-label">Name</div>
+          <EditableName id={texture.id} name={texture.name} />
+        </div>
+        {texture.is_udim ? (
+          <Row label="Type" value={mapLabel(texture.map_type)} />
+        ) : (
+          <div>
+            <div className="field-label">Type</div>
+            <EditableSelect
+              value={texture.map_type ?? "other"}
+              options={MAP_TYPE_OPTIONS}
+              onSave={(v) => api.setTextureMapType(texture.id, v === "other" ? null : v)}
+            />
+          </div>
+        )}
         <Row
           label="Resolution"
           value={
