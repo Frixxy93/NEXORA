@@ -129,6 +129,7 @@ pub fn run() {
             commands::start_discover_sync,
             commands::stop_discover_sync,
             commands::get_discover_status,
+            commands::recompute_metadata,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXORA");

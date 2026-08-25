@@ -18,6 +18,8 @@ export function Settings() {
   const [showToken, setShowToken] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [pluginMsg, setPluginMsg] = useState<string | null>(null);
+  const [recomputing, setRecomputing] = useState(false);
+  const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api.getSettings().then(setSettings).catch(console.error);
@@ -69,6 +71,21 @@ export function Settings() {
       setPluginMsg(String(err));
     } finally {
       setInstalling(false);
+    }
+  };
+
+  const recompute = async () => {
+    setRecomputing(true);
+    setRecomputeMsg(null);
+    try {
+      await api.recomputeMetadata();
+      setRecomputeMsg(
+        "Recomputing channels & tileable in the background — your library will refresh as it finishes.",
+      );
+    } catch (err) {
+      setRecomputeMsg(String(err));
+    } finally {
+      setRecomputing(false);
     }
   };
 
@@ -139,6 +156,18 @@ export function Settings() {
           checked={settings.library.auto_scan}
           onChange={(v) => update((s) => (s.library.auto_scan = v))}
         />
+
+        <Field label="Texture details">
+          <div className="flex items-center gap-2">
+            <button className="btn-ghost whitespace-nowrap" onClick={recompute} disabled={recomputing}>
+              {recomputing ? "Recomputing…" : "Recompute channels & tileable"}
+            </button>
+            <span className="text-[11px] text-muted">
+              Fills in details for textures imported before these were tracked.
+            </span>
+          </div>
+          {recomputeMsg && <div className="text-[11px] text-muted mt-2">{recomputeMsg}</div>}
+        </Field>
       </Section>
 
       {/* Appearance ------------------------------------------------------- */}

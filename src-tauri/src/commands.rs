@@ -546,6 +546,27 @@ pub fn rebuild_texture_sets(state: State<AppState>) -> Result<usize, String> {
     texture::rebuild_texture_sets(db.conn()).map_err(e)
 }
 
+/// Backfill `channels` + `tileable` for textures imported before those were
+/// recorded, then derive material tileability from the refreshed textures. Runs
+/// on a background thread (it decodes files) and emits `library:changed` when
+/// done so grids/inspectors refresh. Returns immediately.
+#[tauri::command]
+pub fn recompute_metadata(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    let db: Db = state.db.clone();
+    std::thread::spawn(move || {
+        let guard = match db.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let conn = guard.conn();
+        let _ = texture::backfill_texture_metadata(conn);
+        let _ = material::recompute_material_tileable(conn);
+        drop(guard);
+        let _ = app.emit("library:changed", ());
+    });
+    Ok(())
+}
+
 /// UDIM tile coverage for a texture: present tiles and any gaps (spec §12).
 #[derive(Clone, Serialize)]
 pub struct UdimInfo {

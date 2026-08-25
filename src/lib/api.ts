@@ -214,6 +214,8 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
   switch (cmd) {
     case "core_version":
       return "0.1.0" as unknown as T;
+    case "recompute_metadata":
+      return undefined as unknown as T;
     case "get_app_settings":
       return mockSettings as unknown as T;
     case "save_app_settings":
@@ -567,6 +569,7 @@ export const api = {
   listTextureSets: () => call<TextureSetDto[]>("list_texture_sets"),
   getTextureSet: (id: string) => call<TextureSetDto | null>("get_texture_set", { id }),
   rebuildTextureSets: () => call<number>("rebuild_texture_sets"),
+  recomputeMetadata: () => call<void>("recompute_metadata"),
   getUdimInfo: (id: string) => call<UdimInfo>("get_udim_info", { id }),
 
   // Phase 4

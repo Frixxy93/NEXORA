@@ -13,7 +13,7 @@ use crate::texture::{
     self, analyze, collect_files, import_texture, ImportOptions, ImportOutcome, EXPECTED_PBR,
 };
 use crate::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -116,6 +116,18 @@ fn supported_renderers(present: &std::collections::HashSet<&str>) -> Vec<&'stati
     renderers
 }
 
+/// A texture's tileable flag (`None` if unknown), for material metadata.
+fn texture_tileable(conn: &Connection, texture_id: &str) -> Option<bool> {
+    conn.query_row(
+        "SELECT tileable FROM textures WHERE asset_id = ?1",
+        [texture_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .ok()
+    .flatten()
+    .map(|v| v != 0)
+}
+
 /// Width/height/UDIM flag for a texture, for material metadata.
 fn texture_dims(conn: &Connection, texture_id: &str) -> Option<(Option<i64>, Option<i64>, bool)> {
     conn.query_row(
@@ -160,6 +172,8 @@ fn create_material(
     let is_udim = slot_tex
         .iter()
         .any(|(_, tid)| texture_dims(conn, tid).map(|(_, _, u)| u).unwrap_or(false));
+    // A material tiles if its base-color (or first) texture tiles.
+    let tileable = base.and_then(|(_, tid)| texture_tileable(conn, tid));
 
     // Health = share of expected PBR slots present (spec §31).
     let present_expected = EXPECTED_PBR.iter().filter(|s| present.contains(**s)).count();
@@ -183,11 +197,12 @@ fn create_material(
     conn.execute(
         "INSERT INTO materials
            (asset_id, folder_path, is_pbr, tileable, is_udim, resolution, health, status)
-         VALUES (?1,?2,?3,NULL,?4,?5,?6,?7)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
         params![
             id,
             folder_path,
             is_pbr as i64,
+            tileable,
             is_udim as i64,
             resolution,
             health,
@@ -495,6 +510,41 @@ pub fn list_recent_materials(conn: &Connection, limit: usize) -> Result<Vec<Mate
 pub fn get_material(conn: &Connection, id: &str) -> Result<Option<MaterialDto>> {
     let heads = query_material_heads(conn, "AND a.id = ?1", &[&id])?;
     Ok(attach_material_details(conn, heads)?.into_iter().next())
+}
+
+/// Backfill `tileable` for materials that don't have it yet, deriving each from
+/// its base-color (or first) texture. Returns how many materials were updated.
+/// Run this after [`crate::texture::backfill_texture_metadata`] so the source
+/// textures already carry their tileable flag.
+pub fn recompute_material_tileable(conn: &Connection) -> Result<usize> {
+    let mut stmt = conn.prepare("SELECT asset_id FROM materials WHERE tileable IS NULL")?;
+    let ids: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut updated = 0usize;
+    for id in ids {
+        // Prefer the base-color slot; fall back to any slot's texture.
+        let tid: Option<String> = conn
+            .query_row(
+                "SELECT texture_id FROM material_maps
+                 WHERE material_id = ?1 AND texture_id IS NOT NULL
+                 ORDER BY (slot = 'base_color') DESC LIMIT 1",
+                [&id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(tid) = tid {
+            if let Some(t) = texture_tileable(conn, &tid) {
+                conn.execute(
+                    "UPDATE materials SET tileable = ?2 WHERE asset_id = ?1",
+                    params![id, t],
+                )?;
+                updated += 1;
+            }
+        }
+    }
+    Ok(updated)
 }
 
 /// Count materials that aren't fully healthy (for library health, spec §30).

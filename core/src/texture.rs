@@ -162,13 +162,58 @@ pub fn analyze(path: &Path, registry: &MapTypeRegistry) -> Result<AnalyzedTextur
         width,
         height,
         format,
-        channels: None,
+        // Channel count from the image header (cheap — no full pixel decode).
+        channels: probe_channels(&bytes),
         color_space,
         file_size,
         is_udim,
         udim_tile,
         hash,
     })
+}
+
+/// Read an image's channel count from its header without decoding pixels.
+/// Returns `None` for formats we can't introspect (e.g. some `.tx`).
+fn probe_channels(bytes: &[u8]) -> Option<u8> {
+    use image::ImageDecoder;
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let decoder = reader.into_decoder().ok()?;
+    Some(decoder.color_type().channel_count())
+}
+
+/// Heuristic seamless-tiling detection: a texture tiles when its opposite edges
+/// wrap into each other. We compare the left/right columns and top/bottom rows of
+/// the (already-decoded) thumbnail; a small average difference means the edges
+/// meet cleanly. Operates on the small thumbnail, so it's cheap.
+fn detect_tileable(thumb: &image::RgbaImage) -> bool {
+    let (w, h) = thumb.dimensions();
+    if w < 8 || h < 8 {
+        return false;
+    }
+    let mut diff: u64 = 0;
+    let mut count: u64 = 0;
+    for y in 0..h {
+        let l = thumb.get_pixel(0, y);
+        let r = thumb.get_pixel(w - 1, y);
+        for c in 0..3 {
+            diff += (l[c] as i32 - r[c] as i32).unsigned_abs() as u64;
+            count += 1;
+        }
+    }
+    for x in 0..w {
+        let t = thumb.get_pixel(x, 0);
+        let b = thumb.get_pixel(x, h - 1);
+        for c in 0..3 {
+            diff += (t[c] as i32 - b[c] as i32).unsigned_abs() as u64;
+            count += 1;
+        }
+    }
+    // Mean absolute edge difference on a 0..255 scale. Seamless CC0 PBR textures
+    // sit well under this; photos and cropped images sit well above.
+    let mean = diff as f64 / count.max(1) as f64;
+    mean < 12.0
 }
 
 /// Detect a UDIM tile number in a filename, e.g. `body.1002.exr` → (true, 1002).
@@ -313,6 +358,15 @@ pub fn import_texture(
         .clone()
         .unwrap_or_else(|| "other".to_string());
 
+    // Thumbnail first (best-effort): its decode also yields tileability, which we
+    // want in the texture row. Failure to thumbnail never blocks the import.
+    let thumb = if opts.generate_preview {
+        generate_thumbnail(Path::new(&stored_path), &opts.thumbnail_dir, &id).ok()
+    } else {
+        None
+    };
+    let tileable: Option<bool> = thumb.as_ref().and_then(|(_, t)| *t);
+
     conn.execute(
         "INSERT INTO assets (id, kind, name, category, favorite, created_at, updated_at)
          VALUES (?1, 'texture', ?2, ?3, 0, ?4, ?4)",
@@ -323,7 +377,7 @@ pub fn import_texture(
         "INSERT INTO textures
            (asset_id, file_path, map_type, width, height, format, channels,
             color_space, file_size, is_udim, tileable, managed, created_at, modified_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,NULL,?11,?12,?12)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?13)",
         params![
             id,
             stored_path,
@@ -335,6 +389,7 @@ pub fn import_texture(
             analyzed.color_space,
             analyzed.file_size as i64,
             analyzed.is_udim as i64,
+            tileable,
             managed as i64,
             ts,
         ],
@@ -345,15 +400,12 @@ pub fn import_texture(
         params![id, analyzed.hash],
     )?;
 
-    // Thumbnail (best-effort; failure never blocks the import).
-    if opts.generate_preview {
-        if let Ok(thumb) = generate_thumbnail(Path::new(&stored_path), &opts.thumbnail_dir, &id) {
-            conn.execute(
-                "INSERT INTO previews (asset_id, preview_path, kind, generated_at)
-                 VALUES (?1, ?2, 'thumbnail', ?3)",
-                params![id, thumb.to_string_lossy(), ts],
-            )?;
-        }
+    if let Some((thumb_path, _)) = thumb {
+        conn.execute(
+            "INSERT INTO previews (asset_id, preview_path, kind, generated_at)
+             VALUES (?1, ?2, 'thumbnail', ?3)",
+            params![id, thumb_path.to_string_lossy(), ts],
+        )?;
     }
 
     Ok(ImportOutcome::Imported {
@@ -459,7 +511,7 @@ fn import_udim_tile(
         params![id, tile, stored_path],
     )?;
     if opts.generate_preview {
-        if let Ok(thumb) = generate_thumbnail(Path::new(stored_path), &opts.thumbnail_dir, &id) {
+        if let Ok((thumb, _)) = generate_thumbnail(Path::new(stored_path), &opts.thumbnail_dir, &id) {
             conn.execute(
                 "INSERT INTO previews (asset_id, preview_path, kind, generated_at)
                  VALUES (?1, ?2, 'thumbnail', ?3)",
@@ -499,17 +551,58 @@ pub fn missing_udim_tiles(tiles: &[u32]) -> Vec<u32> {
 
 /// Decode `src`, write a PNG thumbnail into `dir` named `<id>.png`, return path.
 /// Float formats (EXR/HDR) are clamped to 8-bit — a usable preview, not a grade.
-pub fn generate_thumbnail(src: &Path, dir: &Path, id: &str) -> Result<PathBuf> {
+/// Generate a thumbnail and, reusing the same decode, report whether the texture
+/// tiles seamlessly. Returns `(thumbnail_path, tileable)`.
+pub fn generate_thumbnail(src: &Path, dir: &Path, id: &str) -> Result<(PathBuf, Option<bool>)> {
     std::fs::create_dir_all(dir)?;
     let img = image::open(src)
         .map_err(|e| CoreError::Config(format!("decode failed: {e}")))?;
     let thumb = img.thumbnail(THUMB_MAX, THUMB_MAX); // preserves aspect ratio
+    let rgba = thumb.to_rgba8();
+    let tileable = Some(detect_tileable(&rgba));
     let out = dir.join(format!("{id}.png"));
-    thumb
-        .to_rgba8()
-        .save(&out)
+    rgba.save(&out)
         .map_err(|e| CoreError::Config(format!("thumbnail save failed: {e}")))?;
-    Ok(out)
+    Ok((out, tileable))
+}
+
+/// Backfill `channels` and `tileable` for already-imported textures that predate
+/// those being recorded. Reads each file once (skipping missing/undecodable
+/// ones), fills only the columns that are still NULL, and returns how many rows
+/// were updated. UDIM parents are skipped (their `file_path` is a pattern).
+pub fn backfill_texture_metadata(conn: &Connection) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT asset_id, file_path FROM textures
+         WHERE is_udim = 0 AND (channels IS NULL OR tileable IS NULL)",
+    )?;
+    let targets: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let mut updated = 0usize;
+    for (id, path) in targets {
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue, // file moved/missing — leave as-is for relink
+        };
+        let channels = probe_channels(&bytes);
+        let tileable = image::load_from_memory(&bytes)
+            .ok()
+            .map(|img| detect_tileable(&img.thumbnail(THUMB_MAX, THUMB_MAX).to_rgba8()));
+        if channels.is_none() && tileable.is_none() {
+            continue;
+        }
+        // COALESCE keeps any value already present; only fills the NULLs.
+        conn.execute(
+            "UPDATE textures
+             SET channels = COALESCE(?2, channels),
+                 tileable = COALESCE(?3, tileable)
+             WHERE asset_id = ?1",
+            params![id, channels, tileable],
+        )?;
+        updated += 1;
+    }
+    Ok(updated)
 }
 
 // ---------------------------------------------------------------------------
@@ -923,6 +1016,59 @@ mod tests {
         let again = import_texture(db.conn(), &a, &opts).unwrap();
         assert!(matches!(again, ImportOutcome::DuplicatePath { .. }));
         assert_eq!(list_textures(db.conn(), None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn channels_and_tileable_populated_on_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let reg = MapTypeRegistry::builtin();
+
+        // analyze() reads channels from the header (RGB PNG → 3 channels).
+        let a = analyze(&write_png(dir.path(), "wall_basecolor.png", 64, 64), &reg).unwrap();
+        assert_eq!(a.channels, Some(3));
+
+        let opts = ImportOptions {
+            managed: false,
+            library_root: None,
+            thumbnail_dir: dir.path().join("_t"),
+            generate_preview: true,
+            detect_maps: true,
+        };
+        let id = match import_texture(db.conn(), &a, &opts).unwrap() {
+            ImportOutcome::Imported { id, .. } => id,
+            other => panic!("{other:?}"),
+        };
+        let t = get_texture(db.conn(), &id).unwrap().unwrap();
+        assert_eq!(t.channels, Some(3));
+        // A solid image has identical opposite edges → detected as tileable.
+        assert_eq!(t.tileable, Some(true));
+    }
+
+    #[test]
+    fn backfill_fills_tileable_when_preview_was_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let reg = MapTypeRegistry::builtin();
+        let a = analyze(&write_png(dir.path(), "floor_basecolor.png", 48, 48), &reg).unwrap();
+        // No preview → tileable not computed at import (stays unknown).
+        let opts = ImportOptions {
+            managed: false,
+            library_root: None,
+            thumbnail_dir: dir.path().join("_t"),
+            generate_preview: false,
+            detect_maps: true,
+        };
+        let id = match import_texture(db.conn(), &a, &opts).unwrap() {
+            ImportOutcome::Imported { id, .. } => id,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(get_texture(db.conn(), &id).unwrap().unwrap().tileable, None);
+
+        // Backfill decodes the file and fills the missing flag.
+        let n = backfill_texture_metadata(db.conn()).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(get_texture(db.conn(), &id).unwrap().unwrap().tileable, Some(true));
     }
 
     #[test]
