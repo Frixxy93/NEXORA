@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "../components/EmptyState";
 import { Icon } from "../components/Icon";
 import { TextureCard } from "../components/TextureCard";
@@ -53,6 +53,18 @@ type Selection =
   | { kind: "material"; id: string }
   | null;
 
+// How many cards to mount initially and reveal per scroll step. Large libraries
+// (thousands of assets from Discover) would otherwise mount every card — and its
+// IntersectionObserver — at once. We window the render instead: only the first
+// `REVEAL_STEP` cards mount, and more reveal as the user nears the bottom.
+const REVEAL_STEP = 300;
+
+// One render descriptor per grid cell, so materials/sets/textures window together.
+type Cell =
+  | { t: "material"; m: MaterialDto }
+  | { t: "set"; s: TextureSetDto }
+  | { t: "texture"; x: TextureDto };
+
 export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View) => void }) {
   const meta = VIEW_META[view] ?? { title: view, subtitle: "" };
   const kind = viewKind(view);
@@ -69,6 +81,14 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
   const [selected, setSelected] = useState<Selection>(null);
   const [udim, setUdim] = useState<UdimInfo | null>(null);
   const [loading, setLoading] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(REVEAL_STEP);
+  const gridScrollRef = useRef<HTMLDivElement>(null);
+
+  // Reset the window (and scroll to top) whenever the displayed set changes.
+  useEffect(() => {
+    setVisibleCount(REVEAL_STEP);
+    if (gridScrollRef.current) gridScrollRef.current.scrollTop = 0;
+  }, [view, mode, activeCollection]);
 
   const showingSets = kind?.t === "library" && mode === "sets";
   const inCollection = kind?.t === "collections" && activeCollection !== null;
@@ -213,6 +233,21 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
       : [];
   const curSets = showingSets ? sets : [];
 
+  // Flatten the three arrays into one windowed cell list (only one or two are
+  // ever non-empty for a given view).
+  const cells: Cell[] = [
+    ...curMaterials.map((m) => ({ t: "material", m }) as Cell),
+    ...curSets.map((s) => ({ t: "set", s }) as Cell),
+    ...curTextures.map((x) => ({ t: "texture", x }) as Cell),
+  ];
+  const revealed = cells.slice(0, visibleCount);
+  const onGridScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 800) {
+      setVisibleCount((c) => (c < cells.length ? c + REVEAL_STEP : c));
+    }
+  };
+
   const selectedTexture =
     selected?.kind === "texture" ? curTextures.find((t) => t.id === selected.id) ?? null : null;
   const selectedSet =
@@ -316,36 +351,41 @@ export function Library({ view, onNavigate }: { view: View; onNavigate: (v: View
             />
           )
         ) : (
-          <div className="flex-1 overflow-y-auto p-4">
+          <div ref={gridScrollRef} onScroll={onGridScroll} className="flex-1 overflow-y-auto p-4">
             <div
               className="grid gap-3"
               style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}
             >
-              {curMaterials.map((m) => (
-                <MaterialCard
-                  key={m.id}
-                  material={m}
-                  selected={selected?.kind === "material" && selected.id === m.id}
-                  onSelect={() => selectMaterial(m)}
-                />
-              ))}
-              {curSets.map((s) => (
-                <TextureSetCard
-                  key={s.id}
-                  set={s}
-                  selected={selected?.kind === "set" && selected.id === s.id}
-                  onSelect={() => setSelected({ kind: "set", id: s.id })}
-                />
-              ))}
-              {curTextures.map((t) => (
-                <TextureCard
-                  key={t.id}
-                  texture={t}
-                  selected={selected?.kind === "texture" && selected.id === t.id}
-                  onSelect={() => selectTexture(t)}
-                />
-              ))}
+              {revealed.map((cell) =>
+                cell.t === "material" ? (
+                  <MaterialCard
+                    key={cell.m.id}
+                    material={cell.m}
+                    selected={selected?.kind === "material" && selected.id === cell.m.id}
+                    onSelect={() => selectMaterial(cell.m)}
+                  />
+                ) : cell.t === "set" ? (
+                  <TextureSetCard
+                    key={cell.s.id}
+                    set={cell.s}
+                    selected={selected?.kind === "set" && selected.id === cell.s.id}
+                    onSelect={() => setSelected({ kind: "set", id: cell.s.id })}
+                  />
+                ) : (
+                  <TextureCard
+                    key={cell.x.id}
+                    texture={cell.x}
+                    selected={selected?.kind === "texture" && selected.id === cell.x.id}
+                    onSelect={() => selectTexture(cell.x)}
+                  />
+                ),
+              )}
             </div>
+            {visibleCount < cells.length && (
+              <div className="text-center text-[11px] text-muted py-4">
+                Showing {revealed.length} of {cells.length} — scroll for more
+              </div>
+            )}
           </div>
         )}
       </div>
