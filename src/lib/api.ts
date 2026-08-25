@@ -539,15 +539,17 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       }, 600);
       return undefined as unknown as T;
     }
-    case "discover_browse":
+    case "discover_browse": {
+      const src = String(args?.source ?? "polyhaven");
       return [
-        { source: "polyhaven", id: "rock_wall_01", name: "Rock Wall 01", thumbnail_url: "", categories: ["rock", "outdoor"], synced: false },
-        { source: "polyhaven", id: "wood_planks_02", name: "Wood Planks 02", thumbnail_url: "", categories: ["wood", "floor"], synced: true },
-        { source: "polyhaven", id: "concrete_03", name: "Concrete 03", thumbnail_url: "", categories: ["concrete"], synced: false },
-        { source: "polyhaven", id: "brick_wall_04", name: "Brick Wall 04", thumbnail_url: "", categories: ["brick", "wall"], synced: false },
-        { source: "polyhaven", id: "metal_plate_05", name: "Metal Plate 05", thumbnail_url: "", categories: ["metal"], synced: false },
-        { source: "polyhaven", id: "fabric_06", name: "Fabric 06", thumbnail_url: "", categories: ["fabric"], synced: false },
+        { source: src, id: `${src}_rock_01`, name: "Rock Wall 01", thumbnail_url: "", categories: ["rock", "outdoor"], synced: false },
+        { source: src, id: `${src}_wood_02`, name: "Wood Planks 02", thumbnail_url: "", categories: ["wood", "floor"], synced: true },
+        { source: src, id: `${src}_concrete_03`, name: "Concrete 03", thumbnail_url: "", categories: ["concrete"], synced: false },
+        { source: src, id: `${src}_brick_04`, name: "Brick Wall 04", thumbnail_url: "", categories: ["brick", "wall"], synced: false },
+        { source: src, id: `${src}_metal_05`, name: "Metal Plate 05", thumbnail_url: "", categories: ["metal"], synced: false },
+        { source: src, id: `${src}_fabric_06`, name: "Fabric 06", thumbnail_url: "", categories: ["fabric"], synced: false },
       ] as unknown as T;
+    }
     case "start_discover_download": {
       if (mockDiscoverRunning) return undefined as unknown as T;
       const items = (args?.items as { source: string; id: string }[]) ?? [];
@@ -735,7 +737,7 @@ export const api = {
 
   // Discover — free CC0 texture auto-download
   startDiscoverSync: () => call<void>("start_discover_sync"),
-  discoverBrowse: () => call<CatalogAsset[]>("discover_browse"),
+  discoverBrowse: (source: string) => call<CatalogAsset[]>("discover_browse", { source }),
   startDiscoverDownload: (items: { source: string; id: string }[]) =>
     call<void>("start_discover_download", { items }),
   stopDiscoverSync: () => call<void>("stop_discover_sync"),

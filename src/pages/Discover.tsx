@@ -227,6 +227,7 @@ function BrowseView({
   progress: SyncProgress | null;
   onStop: () => void;
 }) {
+  const [source, setSource] = useState<"polyhaven" | "ambientcg">("polyhaven");
   const [assets, setAssets] = useState<CatalogAsset[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -239,11 +240,18 @@ function BrowseView({
     setAssets(null);
     setLoadErr(null);
     api
-      .discoverBrowse()
+      .discoverBrowse(source)
       .then(setAssets)
       .catch((e) => setLoadErr(String(e)));
   };
-  useEffect(load, []);
+  // Refetch (and reset selection/filters) whenever the browsed source changes.
+  useEffect(() => {
+    load();
+    setSelected(new Set());
+    setCategory("all");
+    setSearch("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source]);
 
   const categories = useMemo(() => {
     const s = new Set<string>();
@@ -289,22 +297,48 @@ function BrowseView({
     }
   };
 
+  const sourceTabs = (
+    <div className="inline-flex items-center gap-0.5 bg-ink-800 border border-line rounded-lg p-0.5 mb-3">
+      {([
+        ["polyhaven", "Poly Haven"],
+        ["ambientcg", "ambientCG"],
+      ] as const).map(([id, label]) => (
+        <button
+          key={id}
+          onClick={() => setSource(id)}
+          className={`px-3 py-1 rounded text-xs ${
+            source === id ? "bg-ink-700 text-white" : "text-muted hover:text-slate-200"
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
   if (loadErr)
     return (
-      <div className="panel p-5 text-xs text-warn max-w-3xl">
-        Couldn’t load the catalog: {loadErr}
-        <button className="btn-ghost text-xs ml-3" onClick={load}>
-          Retry
-        </button>
-      </div>
+      <>
+        {sourceTabs}
+        <div className="panel p-5 text-xs text-warn max-w-3xl">
+          Couldn’t load the catalog: {loadErr}
+          <button className="btn-ghost text-xs ml-3" onClick={load}>
+            Retry
+          </button>
+        </div>
+      </>
     );
   if (!assets)
     return (
-      <div className="panel p-5 text-sm text-muted max-w-3xl">Loading Poly Haven catalog…</div>
+      <>
+        {sourceTabs}
+        <div className="panel p-5 text-sm text-muted max-w-3xl">Loading catalog…</div>
+      </>
     );
 
   return (
     <>
+      {sourceTabs}
       <div className="panel p-4 mb-4 space-y-3">
         <div className="flex gap-2 flex-wrap items-center">
           <input

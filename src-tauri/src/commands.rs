@@ -382,19 +382,29 @@ pub fn get_discover_status(state: State<AppState>) -> Result<DiscoverStatus, Str
     })
 }
 
-/// Fetch the browsable Poly Haven catalog (name + thumbnail URL + categories),
-/// flagging which assets are already in the library. Networked; runs on the IPC
-/// thread (the frontend shows a spinner while it loads).
+/// Fetch a source's browsable catalog (name + thumbnail URL + categories),
+/// flagging which assets are already in the library. `source` is "polyhaven" or
+/// "ambientcg". Networked; runs on the IPC thread (frontend shows a spinner).
 #[tauri::command]
 pub fn discover_browse(
     state: State<AppState>,
+    source: String,
 ) -> Result<Vec<nexora_core::providers::CatalogAsset>, String> {
-    use nexora_core::providers::{self, polyhaven};
+    use nexora_core::providers::{self, ambientcg, polyhaven};
     let agent = polyhaven::agent();
-    let mut list = polyhaven::list_catalog(&agent).map_err(e)?;
+    let (mut list, src) = match source.as_str() {
+        providers::SOURCE_AMBIENTCG => (
+            ambientcg::list_catalog(&agent).map_err(e)?,
+            providers::SOURCE_AMBIENTCG,
+        ),
+        _ => (
+            polyhaven::list_catalog(&agent).map_err(e)?,
+            providers::SOURCE_POLYHAVEN,
+        ),
+    };
     let synced = {
         let guard = state.db.lock().map_err(e)?;
-        providers::synced_ids(guard.conn(), providers::SOURCE_POLYHAVEN)
+        providers::synced_ids(guard.conn(), src)
     };
     for a in &mut list {
         if synced.contains(&a.id) {

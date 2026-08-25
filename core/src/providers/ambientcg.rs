@@ -71,6 +71,95 @@ pub fn parse_page(body: &serde_json::Value, res_prefix: &str) -> Vec<MaterialBun
     out
 }
 
+/// Predictable 256px thumbnail URL for an asset (fallback when previewImage is
+/// absent). Served by ambientCG's media CDN.
+fn thumb_url(asset_id: &str) -> String {
+    format!(
+        "https://acg-media.struffelproductions.com/file/ambientCG-Web/media/thumbnail/256-PNG/{asset_id}.png"
+    )
+}
+
+/// Fetch the browsable catalog: every Material with its display name, category,
+/// and 256px thumbnail URL (for the Discover "Browse" grid). Pages the API;
+/// `synced` is left false — the caller flags already-imported assets.
+pub fn list_catalog(agent: &ureq::Agent) -> Result<Vec<super::CatalogAsset>> {
+    const LIMIT: usize = 100;
+    let mut offset = 0usize;
+    let mut out: Vec<super::CatalogAsset> = Vec::new();
+
+    loop {
+        let url = format!(
+            "{API}/full_json?type=Material&include=displayData,previewData&limit={LIMIT}&offset={offset}"
+        );
+        let body = agent
+            .get(&url)
+            .call()
+            .map_err(|e| net_err("list catalog", e))?
+            .into_string()?;
+        let json: serde_json::Value = serde_json::from_str(&body)?;
+        let Some(assets) = json.get("foundAssets").and_then(|a| a.as_array()) else {
+            break;
+        };
+        let len = assets.len();
+        if len == 0 {
+            break;
+        }
+        for asset in assets {
+            let Some(id) = asset.get("assetId").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let name = asset
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(id)
+                .to_string();
+            let thumbnail_url = asset
+                .pointer("/previewImage/256-PNG")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| thumb_url(id));
+            let categories = asset
+                .get("displayCategory")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|c| vec![c.to_lowercase()])
+                .unwrap_or_default();
+            out.push(super::CatalogAsset {
+                source: super::SOURCE_AMBIENTCG.to_string(),
+                id: id.to_string(),
+                name,
+                thumbnail_url,
+                categories,
+                synced: false,
+            });
+        }
+        offset += len;
+        if len < LIMIT {
+            break;
+        }
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+/// Resolve the ZIP bundle URL for a single asset at `res_prefix` (used to
+/// download a specific pick from the Browse grid, JPG→PNG fallback).
+pub fn bundle_url(agent: &ureq::Agent, id: &str, res_prefix: &str) -> Result<Option<String>> {
+    let url = format!("{API}/full_json?id={id}&include=downloadData");
+    let body = agent
+        .get(&url)
+        .call()
+        .map_err(|e| net_err("bundle url", e))?
+        .into_string()?;
+    let json: serde_json::Value = serde_json::from_str(&body)?;
+    let asset = json
+        .get("foundAssets")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.first());
+    Ok(asset.and_then(|a| pick_zip_download(a, res_prefix)).map(|(u, _)| u))
+}
+
 /// List every Material bundle available at `res_prefix` (e.g. "1K"), paging the
 /// catalog. Materials without a matching ZIP are skipped.
 pub fn list_material_bundles(agent: &ureq::Agent, res_prefix: &str) -> Result<Vec<MaterialBundle>> {

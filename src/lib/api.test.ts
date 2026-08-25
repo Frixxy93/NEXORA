@@ -68,8 +68,9 @@ describe("api mock — bulk operations", () => {
 
 describe("api mock — discover browse", () => {
   it("returns a catalog with thumbnail + synced flags", async () => {
-    const list = await api.discoverBrowse();
+    const list = await api.discoverBrowse("polyhaven");
     expect(list.length).toBeGreaterThan(0);
+    expect(list.every((a) => a.source === "polyhaven")).toBe(true);
     expect(list[0]).toHaveProperty("thumbnail_url");
     expect(list[0]).toHaveProperty("categories");
     expect(list.some((a) => a.synced)).toBe(true);

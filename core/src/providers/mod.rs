@@ -298,8 +298,9 @@ pub fn run_sync(
 }
 
 /// Download a specific set of assets (from the Browse grid) rather than the whole
-/// catalog. `items` is a list of `(source, id)`. ambientCG needs its bundle URL,
-/// which the browse list doesn't carry yet, so only Poly Haven items are queued.
+/// catalog. `items` is a list of `(source, id)`. Poly Haven items queue directly;
+/// each ambientCG item resolves its ZIP bundle URL for the chosen resolution
+/// first (items that can't be resolved are skipped).
 pub fn run_selected(
     db: &Mutex<Database>,
     opts: &SyncOptions,
@@ -307,10 +308,16 @@ pub fn run_selected(
     on_progress: &(dyn Fn(&SyncProgress) + Sync),
     items: Vec<(String, String)>,
 ) -> Result<SyncProgress> {
+    let acg_agent = polyhaven::agent();
+    let res_prefix = opts.resolution.to_uppercase();
     let jobs: Vec<Job> = items
         .into_iter()
         .filter_map(|(source, id)| match source.as_str() {
             SOURCE_POLYHAVEN => Some(Job::PolyHaven { id }),
+            SOURCE_AMBIENTCG => match ambientcg::bundle_url(&acg_agent, &id, &res_prefix) {
+                Ok(Some(url)) => Some(Job::AmbientCg { id, url }),
+                _ => None,
+            },
             _ => None,
         })
         .collect();
