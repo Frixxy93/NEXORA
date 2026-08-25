@@ -24,6 +24,12 @@ fn e<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
+/// Lock the DB, tolerating a poisoned mutex. Used by background workers that lock
+/// briefly per item so the UI + Maya bridge can interleave.
+fn dblock(db: &Db) -> std::sync::MutexGuard<'_, nexora_core::db::Database> {
+    db.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Core engine version, shown in Settings/About and returned by `/api/status`.
 #[tauri::command]
 pub fn core_version() -> String {
@@ -418,14 +424,14 @@ pub fn import_paths(
 }
 
 /// The actual import loop, run on a worker thread.
+///
+/// The DB lock is held only per file (for the row writes) — never across the
+/// whole batch — and the heavy per-file work (reading + hashing the file) runs
+/// unlocked. This keeps the UI and the Maya bridge responsive during a big
+/// import instead of freezing until it finishes (mirrors the Discover sync).
 fn run_import(app: &AppHandle, db: &Db, thumbnail_dir: PathBuf, paths: Vec<String>) -> ImportReport {
-    let guard = match db.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let conn = guard.conn();
-
-    let settings = AppSettings::load(conn).unwrap_or_default();
+    // Settings under a brief lock, then released for the rest of the import.
+    let settings = { AppSettings::load(dblock(db).conn()).unwrap_or_default() };
     let opts = ImportOptions {
         managed: settings.library.storage_mode == StorageMode::Managed,
         library_root: settings.library.location.clone().map(PathBuf::from),
@@ -460,28 +466,37 @@ fn run_import(app: &AppHandle, db: &Db, thumbnail_dir: PathBuf, paths: Vec<Strin
             },
         );
 
-        match texture::analyze(file, &registry) {
-            Ok(a) => match texture::import_texture(conn, &a, &opts) {
-                Ok(ImportOutcome::Imported { id, .. }) => {
-                    report.imported += 1;
-                    // Auto-tag with the texture's category (its map type), when enabled.
-                    if settings.import.auto_tag {
-                        if let Some(mt) = a.map_type.as_deref() {
-                            let _ = library::add_tag(conn, &id, mt);
-                        }
+        // Analyze OUTSIDE the lock — this reads and hashes the whole file, the
+        // single heaviest per-file step.
+        let a = match texture::analyze(file, &registry) {
+            Ok(a) => a,
+            Err(_) => {
+                report.failed += 1;
+                continue;
+            }
+        };
+
+        // Brief per-file lock for the DB write only.
+        let outcome = texture::import_texture(dblock(db).conn(), &a, &opts);
+        match outcome {
+            Ok(ImportOutcome::Imported { id, .. }) => {
+                report.imported += 1;
+                // Auto-tag with the texture's category (its map type), when enabled.
+                if settings.import.auto_tag {
+                    if let Some(mt) = a.map_type.as_deref() {
+                        let _ = library::add_tag(dblock(db).conn(), &id, mt);
                     }
                 }
-                Ok(ImportOutcome::DuplicatePath { .. }) => report.duplicates += 1,
-                Ok(ImportOutcome::Skipped { .. }) => report.failed += 1,
-                Err(_) => report.failed += 1,
-            },
+            }
+            Ok(ImportOutcome::DuplicatePath { .. }) => report.duplicates += 1,
+            Ok(ImportOutcome::Skipped { .. }) => report.failed += 1,
             Err(_) => report.failed += 1,
         }
     }
 
     // Regroup texture sets now that new textures exist (spec §10), if enabled.
     if settings.import.auto_group_texture_sets {
-        let _ = texture::rebuild_texture_sets(conn);
+        let _ = texture::rebuild_texture_sets(dblock(db).conn());
     }
 
     report
