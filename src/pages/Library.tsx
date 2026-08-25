@@ -8,6 +8,7 @@ import { TextureSetInspector } from "../components/TextureSetInspector";
 import { MaterialCard } from "../components/MaterialCard";
 import { MaterialInspector } from "../components/MaterialInspector";
 import { VIEW_META, type View } from "../lib/nav";
+import { viewKind, type Kind } from "../lib/viewKind";
 import { api, onImportDone, onLibraryChanged, pickFile, pickFiles, pickFolder } from "../lib/api";
 import type {
   CollectionDto,
@@ -19,36 +20,6 @@ import type {
   TextureSetDto,
   UdimInfo,
 } from "../lib/types";
-
-type Kind =
-  | { t: "library" }
-  | { t: "textures"; slug: string }
-  | { t: "udim" }
-  | { t: "materials" }
-  | { t: "materials-pbr" }
-  | { t: "materials-renderer"; renderer: string }
-  | { t: "mixed"; source: "favorites" | "recent_added" | "recent_used" }
-  | { t: "duplicates" }
-  | { t: "missing_files" }
-  | { t: "collections" }
-  | null;
-
-function viewKind(view: View): Kind {
-  if (view === "lib.textures") return { t: "library" };
-  if (view === "mtype.udim") return { t: "udim" };
-  if (view.startsWith("ttype.")) return { t: "textures", slug: view.slice("ttype.".length) };
-  if (view === "lib.materials") return { t: "materials" };
-  if (view === "mtype.pbr") return { t: "materials-pbr" };
-  if (view === "mtype.vray") return { t: "materials-renderer", renderer: "vray" };
-  if (view === "mtype.arnold") return { t: "materials-renderer", renderer: "arnold" };
-  if (view === "smart.favorites") return { t: "mixed", source: "favorites" };
-  if (view === "smart.recent_added") return { t: "mixed", source: "recent_added" };
-  if (view === "smart.recent_used") return { t: "mixed", source: "recent_used" };
-  if (view === "smart.duplicates") return { t: "duplicates" };
-  if (view === "smart.missing_files") return { t: "missing_files" };
-  if (view === "collections") return { t: "collections" };
-  return null;
-}
 
 // How many cards to mount initially and reveal per scroll step. Large libraries
 // (thousands of assets from Discover) would otherwise mount every card — and its

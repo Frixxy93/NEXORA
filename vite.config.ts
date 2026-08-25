@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -28,5 +29,11 @@ export default defineConfig({
     target: "es2021",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+  },
+  test: {
+    // jsdom provides `window`/timers for the browser-mock API under test.
+    environment: "jsdom",
+    globals: true,
+    include: ["src/**/*.{test,spec}.ts"],
   },
 });
