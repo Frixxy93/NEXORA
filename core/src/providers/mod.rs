@@ -258,9 +258,14 @@ fn download_and_import(
         Job::AmbientCg { url, .. } => ambientcg::download_and_extract(acg_agent, url, dir)?,
     };
     {
+        // Import + mark-synced atomically: if a later step (or a crash) prevents
+        // the mark, the whole import rolls back, so a retry can't double-import
+        // the same asset. The &Transaction derefs to &Connection for the callees.
         let guard = lock(db);
-        crate::material::import_material_folder(guard.conn(), dir, import_opts, registry)?;
-        mark_synced(guard.conn(), job.source(), job.id())?;
+        let tx = guard.conn().unchecked_transaction()?;
+        crate::material::import_material_folder(&tx, dir, import_opts, registry)?;
+        mark_synced(&tx, job.source(), job.id())?;
+        tx.commit()?;
     }
     Ok(bytes)
 }

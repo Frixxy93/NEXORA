@@ -547,6 +547,10 @@ pub fn set_texture_map_type(conn: &Connection, id: &str, map_type: Option<&str>)
         "UPDATE assets SET category = ?2, updated_at = strftime('%s','now') WHERE id = ?1",
         params![id, map_type.unwrap_or("other")],
     )?;
+    // Reclassifying a texture changes which set it belongs to (sets group by the
+    // shared base name across map types), so regroup after the change — otherwise
+    // the texture keeps its stale set membership until the next full rescan.
+    crate::texture::rebuild_texture_sets(conn)?;
     Ok(())
 }
 

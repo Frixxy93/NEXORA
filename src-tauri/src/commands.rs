@@ -348,6 +348,8 @@ pub fn start_discover_sync(app: AppHandle, state: State<AppState>) -> Result<(),
                 let _ = app.emit("discover:progress", &snapshot);
             }
         }
+        // Refresh grids/stats now that new materials may have landed.
+        let _ = app.emit("library:changed", ());
         running.store(false, Ordering::SeqCst);
     });
     Ok(())

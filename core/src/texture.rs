@@ -326,17 +326,20 @@ pub fn detect_packed(filename: &str) -> Option<[&'static str; 3]> {
     None
 }
 
-/// Split a channel-packed map into single-channel grayscale sibling files next to
-/// the source (`{stem}_{slot}.png`), returning `(slot, path)` for each. Existing
-/// siblings are reused (re-import stays idempotent). Sibling files sit beside the
-/// source so both managed (copied in) and referenced (indexed in place) modes
-/// work uniformly.
-pub fn unpack_packed(src: &Path, layout: [&'static str; 3]) -> Result<Vec<(String, PathBuf)>> {
+/// Split a channel-packed map into single-channel grayscale files (`{stem}_{slot}.png`)
+/// written into `dest_dir`, returning `(slot, path)` for each. Existing files are
+/// reused (re-import stays idempotent). Components are NEXORA-generated derived
+/// data, so `dest_dir` is a NEXORA-managed folder — never the user's source
+/// folder — which keeps referenced-mode imports from writing beside originals.
+pub fn unpack_packed(
+    src: &Path,
+    layout: [&'static str; 3],
+    dest_dir: &Path,
+) -> Result<Vec<(String, PathBuf)>> {
     let img = image::open(src)
         .map_err(|e| CoreError::Config(format!("decode packed map: {e}")))?
         .to_rgba8();
     let (w, h) = img.dimensions();
-    let dir = src.parent().unwrap_or_else(|| Path::new("."));
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("packed");
 
     let mut out = Vec::new();
@@ -344,7 +347,7 @@ pub fn unpack_packed(src: &Path, layout: [&'static str; 3]) -> Result<Vec<(Strin
         if slot.is_empty() {
             continue;
         }
-        let dest = dir.join(format!("{stem}_{slot}.png"));
+        let dest = dest_dir.join(format!("{stem}_{slot}.png"));
         if !dest.exists() {
             let mut gray = image::GrayImage::new(w, h);
             for (x, y, px) in img.enumerate_pixels() {
@@ -361,25 +364,36 @@ pub fn unpack_packed(src: &Path, layout: [&'static str; 3]) -> Result<Vec<(Strin
 /// Analyze a file for import, expanding a channel-packed map into its component
 /// single-channel maps. Does NOT touch the DB — the heavy work (decode/unpack)
 /// runs unlocked so the caller can keep DB locks brief. A non-packed file (or one
-/// that fails to unpack) yields a single analysis.
+/// that can't be unpacked) yields a single analysis.
+///
+/// Unpacked components are written under `{library_root}/Textures/_unpacked/` so
+/// they live in NEXORA's library, not the user's source folder — required for
+/// referenced mode (which must never write beside the user's files). Without a
+/// library root, the packed file is imported as-is instead.
 pub fn prepare_import(
     path: &Path,
     opts: &ImportOptions,
     registry: &MapTypeRegistry,
 ) -> Result<Vec<AnalyzedTexture>> {
     if opts.detect_maps {
-        if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+        if let (Some(fname), Some(root)) = (
+            path.file_name().and_then(|n| n.to_str()),
+            opts.library_root.as_ref(),
+        ) {
             if let Some(layout) = detect_packed(fname) {
-                if let Ok(comps) = unpack_packed(path, layout) {
-                    if !comps.is_empty() {
-                        let mut out = Vec::with_capacity(comps.len());
-                        for (_slot, comp) in comps {
-                            out.push(analyze(&comp, registry)?);
+                let dest_dir = root.join("Textures").join("_unpacked");
+                if std::fs::create_dir_all(&dest_dir).is_ok() {
+                    if let Ok(comps) = unpack_packed(path, layout, &dest_dir) {
+                        if !comps.is_empty() {
+                            let mut out = Vec::with_capacity(comps.len());
+                            for (_slot, comp) in comps {
+                                out.push(analyze(&comp, registry)?);
+                            }
+                            return Ok(out);
                         }
-                        return Ok(out);
                     }
                 }
-                // Unpack failed — fall through and import the packed file as-is.
+                // Couldn't unpack — fall through and import the packed file as-is.
             }
         }
     }
@@ -1167,9 +1181,13 @@ mod tests {
 
         assert_eq!(detect_packed("Rock_ARM_2K.png"), Some(["ao", "roughness", "metallic"]));
 
+        // Unpacking requires a library root: components are written into the
+        // managed library, never beside the user's source file (which would
+        // pollute a referenced-mode source folder).
+        let lib = dir.path().join("lib");
         let opts = ImportOptions {
             managed: false,
-            library_root: None,
+            library_root: Some(lib.clone()),
             thumbnail_dir: dir.path().join("_t"),
             generate_preview: false,
             detect_maps: true,
@@ -1181,8 +1199,14 @@ mod tests {
         assert!(slots.contains("ao"));
         assert!(slots.contains("roughness"));
         assert!(slots.contains("metallic"));
-        // Component siblings were written next to the source.
-        assert!(dir.path().join("Rock_ARM_2K_roughness.png").exists());
+        // Component siblings were written into the library's _unpacked area,
+        // NOT next to the source file.
+        assert!(lib
+            .join("Textures")
+            .join("_unpacked")
+            .join("Rock_ARM_2K_roughness.png")
+            .exists());
+        assert!(!dir.path().join("Rock_ARM_2K_roughness.png").exists());
 
         // With map detection off, the packed file is imported as-is (no split).
         let opts_off = ImportOptions {

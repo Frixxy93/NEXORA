@@ -74,6 +74,14 @@ pub struct BridgeContext {
     pub on_change: Arc<dyn Fn() + Send + Sync>,
 }
 
+/// Lock a mutex, tolerating poisoning. A panic in one bridge request must not
+/// take the whole Maya link down: recover the guard rather than propagating the
+/// poison (which would `unwrap`-panic every subsequent request and kill the
+/// serving thread).
+fn dblock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Generate a fresh 32-hex-char bridge token.
 pub fn new_token() -> String {
     let mut rng = rand::thread_rng();
@@ -183,7 +191,7 @@ fn import_opts(conn: &rusqlite::Connection, thumbnail_dir: &PathBuf) -> ImportOp
 }
 
 fn route_status(ctx: &BridgeContext) -> Response<std::io::Cursor<Vec<u8>>> {
-    let db = ctx.db.lock().unwrap();
+    let db = dblock(&ctx.db);
     let conn = db.conn();
     let materials: i64 = conn
         .query_row("SELECT COUNT(*) FROM assets WHERE kind='material'", [], |r| r.get(0))
@@ -211,7 +219,7 @@ fn route_status(ctx: &BridgeContext) -> Response<std::io::Cursor<Vec<u8>>> {
 }
 
 fn route_materials(ctx: &BridgeContext) -> Response<std::io::Cursor<Vec<u8>>> {
-    let db = ctx.db.lock().unwrap();
+    let db = dblock(&ctx.db);
     match material::list_materials(db.conn(), None) {
         Ok(list) => json_response(json!(list), 200),
         Err(e) => json_response(json!({"error": e.to_string()}), 500),
@@ -219,7 +227,7 @@ fn route_materials(ctx: &BridgeContext) -> Response<std::io::Cursor<Vec<u8>>> {
 }
 
 fn route_material(ctx: &BridgeContext, id: &str) -> Response<std::io::Cursor<Vec<u8>>> {
-    let db = ctx.db.lock().unwrap();
+    let db = dblock(&ctx.db);
     match material::get_material(db.conn(), id) {
         Ok(Some(m)) => json_response(json!(m), 200),
         Ok(None) => json_response(json!({"error": "not found"}), 404),
@@ -228,7 +236,7 @@ fn route_material(ctx: &BridgeContext, id: &str) -> Response<std::io::Cursor<Vec
 }
 
 fn route_textures(ctx: &BridgeContext) -> Response<std::io::Cursor<Vec<u8>>> {
-    let db = ctx.db.lock().unwrap();
+    let db = dblock(&ctx.db);
     match texture::list_textures(db.conn(), None) {
         Ok(list) => json_response(json!(list), 200),
         Err(e) => json_response(json!({"error": e.to_string()}), 500),
@@ -236,7 +244,7 @@ fn route_textures(ctx: &BridgeContext) -> Response<std::io::Cursor<Vec<u8>>> {
 }
 
 fn route_texture(ctx: &BridgeContext, id: &str) -> Response<std::io::Cursor<Vec<u8>>> {
-    let db = ctx.db.lock().unwrap();
+    let db = dblock(&ctx.db);
     match texture::get_texture(db.conn(), id) {
         Ok(Some(t)) => json_response(json!(t), 200),
         Ok(None) => json_response(json!({"error": "not found"}), 404),
@@ -250,7 +258,7 @@ fn route_search(ctx: &BridgeContext, query: &str) -> Response<std::io::Cursor<Ve
         .find_map(|kv| kv.strip_prefix("q="))
         .map(|v| v.replace('+', " "))
         .unwrap_or_default();
-    let db = ctx.db.lock().unwrap();
+    let db = dblock(&ctx.db);
     match crate::library::search(db.conn(), &q) {
         Ok(r) => json_response(json!(r), 200),
         Err(e) => json_response(json!({"error": e.to_string()}), 500),
@@ -259,10 +267,10 @@ fn route_search(ctx: &BridgeContext, query: &str) -> Response<std::io::Cursor<Ve
 
 fn route_pull(ctx: &BridgeContext) -> Response<std::io::Cursor<Vec<u8>>> {
     let items: Vec<SendItem> = {
-        let mut out = ctx.outbox.lock().unwrap();
+        let mut out = dblock(&ctx.outbox);
         std::mem::take(&mut *out)
     };
-    let db = ctx.db.lock().unwrap();
+    let db = dblock(&ctx.db);
     let conn = db.conn();
     let resolved: Vec<serde_json::Value> = items
         .into_iter()
@@ -282,7 +290,7 @@ fn route_pull(ctx: &BridgeContext) -> Response<std::io::Cursor<Vec<u8>>> {
 fn route_heartbeat(ctx: &BridgeContext, body: &serde_json::Value) -> Response<std::io::Cursor<Vec<u8>>> {
     let version = body.get("version").and_then(|v| v.as_str()).map(String::from);
     {
-        let mut link = ctx.maya.lock().unwrap();
+        let mut link = dblock(&ctx.maya);
         link.last_seen = Some(Instant::now());
         link.version = version;
     }
@@ -294,7 +302,7 @@ fn route_texture_import(ctx: &BridgeContext, body: &serde_json::Value) -> Respon
         Some(p) => p.to_string(),
         None => return json_response(json!({"error": "missing path"}), 400),
     };
-    let db = ctx.db.lock().unwrap();
+    let db = dblock(&ctx.db);
     let conn = db.conn();
     let opts = import_opts(conn, &ctx.thumbnail_dir);
     let registry = MapTypeRegistry::builtin();
@@ -335,7 +343,7 @@ fn route_material_capture(ctx: &BridgeContext, body: &serde_json::Value) -> Resp
         return json_response(json!({"error": "no maps provided"}), 400);
     }
 
-    let db = ctx.db.lock().unwrap();
+    let db = dblock(&ctx.db);
     let conn = db.conn();
     let opts = import_opts(conn, &ctx.thumbnail_dir);
     let registry = MapTypeRegistry::builtin();

@@ -157,8 +157,14 @@ impl Default for AppSettings {
 const SETTINGS_KEY: &str = "app";
 
 impl AppSettings {
-    /// Load settings from the DB, falling back to defaults (and persisting them)
-    /// on first run or if the stored blob is unreadable.
+    /// Load settings from the DB, falling back to defaults on first run or if the
+    /// stored blob is unreadable.
+    ///
+    /// Defaults are persisted only on genuine first run (no row at all). If a row
+    /// *exists* but fails to parse, we return defaults **without saving** — a
+    /// transiently unreadable blob (e.g. written by a newer version, or a partial
+    /// write) must not clobber the user's real settings, above all their library
+    /// location. Quarantine, don't wipe.
     pub fn load(conn: &Connection) -> Result<AppSettings> {
         let raw: Option<String> = conn
             .query_row(
@@ -168,8 +174,13 @@ impl AppSettings {
             )
             .ok();
 
-        match raw.and_then(|s| serde_json::from_str(&s).ok()) {
-            Some(settings) => Ok(settings),
+        match raw {
+            Some(s) => match serde_json::from_str(&s) {
+                Ok(settings) => Ok(settings),
+                // Row present but unparseable: hand back defaults, but leave the
+                // stored (possibly recoverable) blob untouched.
+                Err(_) => Ok(AppSettings::default()),
+            },
             None => {
                 let defaults = AppSettings::default();
                 defaults.save(conn)?;
@@ -215,5 +226,38 @@ mod tests {
         let again = AppSettings::load(conn).unwrap();
         assert_eq!(again.library.location.as_deref(), Some("D:\\NEXORA_LIBRARY"));
         assert_eq!(again.library.storage_mode, StorageMode::Referenced);
+    }
+
+    #[test]
+    fn corrupt_blob_is_quarantined_not_wiped() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+
+        // Save real settings with a library location.
+        let mut s = AppSettings::default();
+        s.library.location = Some("D:\\NEXORA_LIBRARY".into());
+        s.save(conn).unwrap();
+
+        // Corrupt the stored blob (simulate a partial/newer-version write).
+        conn.execute(
+            "UPDATE settings SET value = ?1 WHERE key = ?2",
+            rusqlite::params!["{ this is not valid json", SETTINGS_KEY],
+        )
+        .unwrap();
+
+        // Load returns defaults (no crash) ...
+        let loaded = AppSettings::load(conn).unwrap();
+        assert!(loaded.library.location.is_none());
+
+        // ... but must NOT have overwritten the stored blob: the corrupt value is
+        // still there, recoverable, rather than replaced with defaults.
+        let raw: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                [SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, "{ this is not valid json");
     }
 }

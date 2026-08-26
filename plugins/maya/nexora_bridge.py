@@ -266,6 +266,34 @@ _SLOT_ATTRS = {
 }
 
 
+def _connect_ao_basecolor(ao_node, bc_node, shader, renderer):
+    """Wire an ambient-occlusion map by MULTIPLYING it into the base colour.
+
+    No surface shader (standardSurface / aiStandardSurface / VRayMtl) has a
+    dedicated AO input, so the physically-correct place for a baked AO map is
+    modulating the diffuse albedo: ``base_color * ao``. A ``multiplyDivide`` node
+    does this in one hop and works across all three renderers. If there is no
+    base-colour map, the AO map alone drives the colour (multiplied against
+    white), so the map is never silently dropped.
+    """
+    attr = _SLOT_ATTRS.get(renderer, {}).get("base_color")
+    if not attr:
+        return
+    try:
+        mult = cmds.shadingNode("multiplyDivide", asUtility=True)
+        cmds.setAttr(mult + ".operation", 1)  # 1 = multiply
+        # AO (grayscale) modulates every channel of the base colour.
+        cmds.connectAttr(ao_node + ".outColor", mult + ".input2", f=True)
+        if bc_node is not None:
+            cmds.connectAttr(bc_node + ".outColor", mult + ".input1", f=True)
+        else:
+            # No albedo map: multiply against white so AO alone tints the shader.
+            cmds.setAttr(mult + ".input1", 1.0, 1.0, 1.0, type="double3")
+        cmds.connectAttr(mult + ".output", shader + "." + attr, f=True)
+    except Exception:
+        pass
+
+
 def _connect_slot(file_node, slot, shader, sg, renderer, is_color):
     """Dedicated per-renderer wiring for one map. Mirrors the C++
     ``nexoraConnectSlot`` — normal/bump/displacement and the scalar/colour slots,
@@ -340,6 +368,13 @@ def build_shader(material):
         is_udim = bool(t.get("is_udim")) or (path and "<UDIM>" in path)
         return path, bool(is_udim)
 
+    # AO has no dedicated shader slot; it's multiplied into base_color below. So
+    # build its file node here but defer wiring, and — when AO is present — defer
+    # base_color too so the multiply drives the colour instead of a direct link.
+    has_ao = "ao" in maps
+    ao_fn = None
+    bc_fn = None
+
     for slot, node in maps.items():
         path, is_udim = tex_for(node.get("texture_id", ""))
         if not path:
@@ -347,9 +382,19 @@ def build_shader(material):
         is_color = slot in ("base_color", "emission")
         try:
             fn = _make_file_node(path, name + "_" + slot, raw=not is_color, is_udim=is_udim)
+            if slot == "ao":
+                ao_fn = fn
+                continue
+            if slot == "base_color" and has_ao:
+                bc_fn = fn  # wired through the AO multiply, not directly
+                continue
             _connect_slot(fn, slot, shader, sg, renderer, is_color)
         except Exception as exc:
             om.MGlobal.displayWarning("NEXORA: could not connect %s (%s)" % (slot, exc))
+
+    # base_color * ao → shader colour (only when an AO map is present).
+    if ao_fn is not None:
+        _connect_ao_basecolor(ao_fn, bc_fn, shader, renderer)
 
     return shader, sg
 
