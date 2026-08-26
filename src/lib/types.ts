@@ -243,3 +243,11 @@ export interface BridgeInfo {
   connected: boolean;
   maya_version: string | null;
 }
+
+// Cloud app-lock (Firebase auth) — mirror of commands::AuthStatus.
+export interface AuthStatus {
+  /** True while this session is signed in. */
+  authenticated: boolean;
+  /** The signed-in email, if any. */
+  email: string | null;
+}

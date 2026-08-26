@@ -928,6 +928,26 @@ pub fn set_texture_map_type(
     Ok(())
 }
 
+/// Edit one slot of a material: add/swap a map (`texture_id = Some`) or remove it
+/// (`texture_id = None`). Recomputes the material's derived metadata + renderer
+/// availability, then refreshes the UI.
+#[tauri::command]
+pub fn set_material_map(
+    app: AppHandle,
+    state: State<AppState>,
+    material_id: String,
+    slot: String,
+    texture_id: Option<String>,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(e)?;
+        material::set_material_map(db.conn(), &material_id, &slot, texture_id.as_deref())
+            .map_err(e)?;
+    }
+    let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
 // ===========================================================================
 // Bulk operations (multi-select) — loop under one lock, emit once.
 // ===========================================================================
@@ -1187,5 +1207,180 @@ pub fn remove_asset(app: AppHandle, state: State<AppState>, id: String) -> Resul
         let _ = std::fs::remove_file(path); // cache file only; best-effort
     }
     let _ = app.emit("library:changed", ());
+    Ok(())
+}
+
+// ===========================================================================
+// Cloud app lock (Firebase Authentication) — see nexora_core::cloud_auth.
+// ===========================================================================
+
+/// The Firebase Web API key for this app's project (`nexora-937`). This is NOT a
+/// secret — Google designs it to ship inside client apps; it only identifies the
+/// project, and all security is enforced server-side by Firebase.
+const FIREBASE_API_KEY: &str = "AIzaSyACAVWLuEHMb7YkuNCU6RQV4a0UufwcXsI";
+
+/// Google OAuth "Desktop app" client for Sign in with Google. Injected at BUILD
+/// time from environment variables (set from GitHub Actions secrets in CI, or in
+/// your shell for a local build) so the values never live in the source tree. A
+/// build without them compiles fine — Google sign-in is just disabled until set.
+const GOOGLE_CLIENT_ID: &str = match option_env!("NEXORA_GOOGLE_CLIENT_ID") {
+    Some(v) => v,
+    None => "",
+};
+const GOOGLE_CLIENT_SECRET: &str = match option_env!("NEXORA_GOOGLE_CLIENT_SECRET") {
+    Some(v) => v,
+    None => "",
+};
+
+/// Open a URL in the user's default system browser (Google forbids its sign-in
+/// inside embedded webviews, so the OAuth consent screen must open externally).
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        // rundll32 avoids cmd.exe's `&`-splitting on OAuth URLs.
+        let _ = std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", url])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
+/// Login state the frontend needs to decide what to show.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthStatus {
+    /// True while this session is signed in.
+    pub authenticated: bool,
+    /// The signed-in email, if any.
+    pub email: Option<String>,
+}
+
+/// Lock the auth session, tolerating a poisoned mutex.
+fn authlock<'a>(
+    state: &'a State<'_, AppState>,
+) -> std::sync::MutexGuard<'a, crate::state::AuthSession> {
+    state.auth.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn auth_snapshot(state: &State<AppState>) -> AuthStatus {
+    let sess = authlock(state);
+    AuthStatus {
+        authenticated: sess.authenticated,
+        email: sess.email.clone(),
+    }
+}
+
+/// Store a successful Firebase auth result as the current session.
+fn begin_session(state: &State<AppState>, user: nexora_core::cloud_auth::CloudUser) -> AuthStatus {
+    let mut sess = authlock(state);
+    sess.authenticated = true;
+    sess.email = Some(user.email);
+    sess.id_token = Some(user.id_token);
+    AuthStatus {
+        authenticated: sess.authenticated,
+        email: sess.email.clone(),
+    }
+}
+
+/// Whether this session is currently signed in.
+#[tauri::command]
+pub fn auth_status(state: State<AppState>) -> Result<AuthStatus, String> {
+    Ok(auth_snapshot(&state))
+}
+
+/// Create a new cloud account and sign in (Firebase signUp).
+#[tauri::command]
+pub fn auth_register(
+    state: State<AppState>,
+    email: String,
+    password: String,
+) -> Result<AuthStatus, String> {
+    let user = nexora_core::cloud_auth::sign_up(FIREBASE_API_KEY, &email, &password).map_err(e)?;
+    Ok(begin_session(&state, user))
+}
+
+/// Sign in to an existing cloud account (Firebase signInWithPassword).
+#[tauri::command]
+pub fn auth_login(
+    state: State<AppState>,
+    email: String,
+    password: String,
+) -> Result<AuthStatus, String> {
+    let user = nexora_core::cloud_auth::sign_in(FIREBASE_API_KEY, &email, &password).map_err(e)?;
+    Ok(begin_session(&state, user))
+}
+
+/// Send a password-reset email via Firebase. No session needed (it's used from
+/// the login screen). Always succeeds for a well-formed email so it can't be used
+/// to probe which addresses have accounts.
+#[tauri::command]
+pub fn auth_send_password_reset(email: String) -> Result<(), String> {
+    nexora_core::cloud_auth::send_password_reset(FIREBASE_API_KEY, &email).map_err(e)
+}
+
+/// Sign in with Google. Opens the system browser to Google's consent screen and
+/// completes the loopback OAuth flow, then starts a NEXORA session. Blocks until
+/// the user finishes in the browser (or the flow times out).
+#[tauri::command]
+pub fn auth_login_google(state: State<AppState>) -> Result<AuthStatus, String> {
+    if GOOGLE_CLIENT_ID.is_empty() || GOOGLE_CLIENT_SECRET.is_empty() {
+        return Err("Google sign-in isn't configured in this build.".into());
+    }
+    let user = nexora_core::cloud_auth::login_with_google(
+        GOOGLE_CLIENT_ID,
+        GOOGLE_CLIENT_SECRET,
+        FIREBASE_API_KEY,
+        &|u| open_in_browser(u),
+    )
+    .map_err(e)?;
+    Ok(begin_session(&state, user))
+}
+
+/// End the current session (local library untouched; the next launch requires
+/// signing in again).
+#[tauri::command]
+pub fn auth_logout(state: State<AppState>) -> Result<AuthStatus, String> {
+    {
+        let mut sess = authlock(&state);
+        sess.authenticated = false;
+        sess.email = None;
+        sess.id_token = None;
+    }
+    Ok(auth_snapshot(&state))
+}
+
+/// Change the signed-in user's password. Re-authenticates with the current
+/// password first (which both verifies it and yields a fresh ID token), then
+/// updates to the new password.
+#[tauri::command]
+pub fn auth_change_password(
+    state: State<AppState>,
+    current_password: String,
+    new_password: String,
+) -> Result<(), String> {
+    let email = {
+        let sess = authlock(&state);
+        match &sess.email {
+            Some(u) => u.clone(),
+            None => return Err("You must be signed in to change your password.".into()),
+        }
+    };
+    // Re-authenticate to verify the current password and get a fresh token, then
+    // rotate to the new password.
+    let signed_in =
+        nexora_core::cloud_auth::sign_in(FIREBASE_API_KEY, &email, &current_password).map_err(e)?;
+    let refreshed =
+        nexora_core::cloud_auth::change_password(FIREBASE_API_KEY, &signed_in.id_token, &new_password)
+            .map_err(e)?;
+
+    // Keep the session's token fresh after the change.
+    let mut sess = authlock(&state);
+    sess.id_token = Some(refreshed.id_token);
     Ok(())
 }

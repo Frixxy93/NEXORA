@@ -144,16 +144,22 @@ fn texture_dims(conn: &Connection, texture_id: &str) -> Option<(Option<i64>, Opt
     .ok()
 }
 
-/// Core creator shared by folder-import and create-from-set. `slot_tex` is the
-/// ordered, de-duplicated (slot → texture id) mapping.
-fn create_material(
-    conn: &Connection,
-    name: &str,
-    category: &str,
-    folder_path: Option<&str>,
-    slot_tex: &[(String, String)],
-) -> Result<String> {
-    let present: std::collections::HashSet<&str> = slot_tex.iter().map(|(s, _)| s.as_str()).collect();
+/// A material's derived metadata, computed purely from its filled slots.
+struct DerivedMeta {
+    is_pbr: bool,
+    tileable: Option<bool>,
+    is_udim: bool,
+    resolution: Option<String>,
+    health: i64,
+    status: &'static str,
+}
+
+/// Compute a material's derived metadata from its (slot → texture id) mapping.
+/// The single source of truth for both creation and later edits, so an edited
+/// material's PBR/health/resolution always match a freshly created one.
+fn compute_derived_meta(conn: &Connection, slot_tex: &[(String, String)]) -> DerivedMeta {
+    let present: std::collections::HashSet<&str> =
+        slot_tex.iter().map(|(s, _)| s.as_str()).collect();
     let is_pbr = present.contains("base_color")
         && present.contains("normal")
         && (present.contains("roughness")
@@ -186,6 +192,149 @@ fn create_material(
         "incomplete"
     };
 
+    DerivedMeta {
+        is_pbr,
+        tileable,
+        is_udim,
+        resolution,
+        health,
+        status,
+    }
+}
+
+/// The material's current filled slots (rows with a non-null texture), ordered.
+fn current_slot_tex(conn: &Connection, material_id: &str) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT slot, texture_id FROM material_maps
+         WHERE material_id = ?1 AND texture_id IS NOT NULL ORDER BY slot",
+    )?;
+    let rows = stmt.query_map([material_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Recompute a material's derived metadata (PBR/health/resolution/tileable/UDIM)
+/// and renderer availability from its current map rows. Call after ANY change to
+/// `material_maps` so the stored material stays consistent. Existing renderer
+/// presets keep their `params`; only add/remove rows as support changes.
+pub fn recompute_material_metadata(conn: &Connection, material_id: &str) -> Result<()> {
+    let slot_tex = current_slot_tex(conn, material_id)?;
+    let meta = compute_derived_meta(conn, &slot_tex);
+
+    conn.execute(
+        "UPDATE materials
+           SET is_pbr = ?2, tileable = ?3, is_udim = ?4, resolution = ?5, health = ?6, status = ?7
+         WHERE asset_id = ?1",
+        params![
+            material_id,
+            meta.is_pbr as i64,
+            meta.tileable,
+            meta.is_udim as i64,
+            meta.resolution,
+            meta.health,
+            meta.status
+        ],
+    )?;
+    conn.execute(
+        "UPDATE assets SET updated_at = strftime('%s','now') WHERE id = ?1",
+        params![material_id],
+    )?;
+
+    // Sync renderer availability: drop presets no longer supported, add new ones.
+    let present: std::collections::HashSet<&str> =
+        slot_tex.iter().map(|(s, _)| s.as_str()).collect();
+    let supported = supported_renderers(&present); // always includes generic_pbr
+    let placeholders = std::iter::repeat("?")
+        .take(supported.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let del_sql = format!(
+        "DELETE FROM renderer_presets WHERE material_id = ? AND renderer NOT IN ({placeholders})"
+    );
+    let mut del_params: Vec<&dyn rusqlite::ToSql> = vec![&material_id];
+    for r in &supported {
+        del_params.push(r);
+    }
+    conn.execute(&del_sql, del_params.as_slice())?;
+    for renderer in &supported {
+        conn.execute(
+            "INSERT OR IGNORE INTO renderer_presets (material_id, renderer, params)
+             VALUES (?1, ?2, NULL)",
+            params![material_id, renderer],
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Set (or clear) the texture filling one slot of a material, then recompute the
+/// material's derived metadata. `texture_id = Some(..)` adds or swaps the slot;
+/// `None` removes it. Used by in-app material map editing (add/swap/remove a map).
+pub fn set_material_map(
+    conn: &Connection,
+    material_id: &str,
+    slot: &str,
+    texture_id: Option<&str>,
+) -> Result<()> {
+    // The material must exist.
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM materials WHERE asset_id = ?1",
+            [material_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !exists {
+        return Err(crate::CoreError::NotFound(format!("material {material_id}")));
+    }
+
+    match texture_id {
+        Some(tid) => {
+            // The texture must exist before we link it.
+            let tex_ok: bool = conn
+                .query_row(
+                    "SELECT 1 FROM textures WHERE asset_id = ?1",
+                    [tid],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if !tex_ok {
+                return Err(crate::CoreError::NotFound(format!("texture {tid}")));
+            }
+            conn.execute(
+                "INSERT INTO material_maps (material_id, slot, texture_id) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(material_id, slot) DO UPDATE SET texture_id = excluded.texture_id",
+                params![material_id, slot, tid],
+            )?;
+        }
+        None => {
+            conn.execute(
+                "DELETE FROM material_maps WHERE material_id = ?1 AND slot = ?2",
+                params![material_id, slot],
+            )?;
+        }
+    }
+
+    recompute_material_metadata(conn, material_id)?;
+    Ok(())
+}
+
+/// Core creator shared by folder-import and create-from-set. `slot_tex` is the
+/// ordered, de-duplicated (slot → texture id) mapping.
+fn create_material(
+    conn: &Connection,
+    name: &str,
+    category: &str,
+    folder_path: Option<&str>,
+    slot_tex: &[(String, String)],
+) -> Result<String> {
     let id = new_id(AssetKind::Material);
     let ts = now();
 
@@ -194,20 +343,12 @@ fn create_material(
          VALUES (?1, 'material', ?2, ?3, 0, ?4, ?4)",
         params![id, name, category, ts],
     )?;
+    // Insert with placeholder metadata; recompute fills it in from the maps below.
     conn.execute(
         "INSERT INTO materials
            (asset_id, folder_path, is_pbr, tileable, is_udim, resolution, health, status)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        params![
-            id,
-            folder_path,
-            is_pbr as i64,
-            tileable,
-            is_udim as i64,
-            resolution,
-            health,
-            status
-        ],
+         VALUES (?1, ?2, 0, NULL, 0, NULL, 0, 'broken')",
+        params![id, folder_path],
     )?;
     for (slot, tex_id) in slot_tex {
         conn.execute(
@@ -215,15 +356,8 @@ fn create_material(
             params![id, slot, tex_id],
         )?;
     }
-    // Record every renderer this material can be applied in, so the V-Ray/Arnold
-    // library views and the inspector "Renderers" chips reflect reality.
-    for renderer in supported_renderers(&present) {
-        conn.execute(
-            "INSERT OR IGNORE INTO renderer_presets (material_id, renderer, params)
-             VALUES (?1, ?2, NULL)",
-            params![id, renderer],
-        )?;
-    }
+    // Derive metadata + renderer availability from the freshly-linked maps.
+    recompute_material_metadata(conn, &id)?;
 
     Ok(id)
 }
@@ -630,6 +764,70 @@ mod tests {
 
         // Textures also exist independently and are referenced, not duplicated.
         assert_eq!(texture::list_textures(db.conn(), None).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn set_material_map_adds_swaps_and_removes_slots() {
+        let root = tempfile::tempdir().unwrap();
+        let mat_dir = root.path().join("Concrete");
+        std::fs::create_dir_all(&mat_dir).unwrap();
+        write_png(&mat_dir, "BaseColor.jpg");
+        write_png(&mat_dir, "Normal.jpg");
+
+        let db = Database::open_in_memory().unwrap();
+        let reg = MapTypeRegistry::builtin();
+        let conn = db.conn();
+        let res = import_material_folder(conn, &mat_dir, &opts(root.path()), &reg).unwrap();
+        let mid = res.id;
+
+        // Starts with base_color + normal → not full PBR (no roughness/metallic).
+        let m = get_material(conn, &mid).unwrap().unwrap();
+        assert!(!m.is_pbr);
+        assert_eq!(m.maps.len(), 2);
+        let base_line = m.health;
+
+        // Import a standalone roughness texture and ADD it to the material.
+        let rough = write_png(root.path(), "Extra_Roughness_2K.png");
+        let ra = analyze(&rough, &reg).unwrap();
+        let rough_id = match import_texture(conn, &ra, &opts(root.path())).unwrap() {
+            ImportOutcome::Imported { id, .. } => id,
+            ImportOutcome::DuplicatePath { id } => id,
+            ImportOutcome::Skipped { .. } => panic!("roughness skipped"),
+        };
+        set_material_map(conn, &mid, "roughness", Some(&rough_id)).unwrap();
+
+        // Now base_color + normal + roughness → full PBR, health went up.
+        let m = get_material(conn, &mid).unwrap().unwrap();
+        assert!(m.is_pbr, "adding roughness should complete PBR");
+        assert_eq!(m.maps.len(), 3);
+        assert!(m.health > base_line);
+        assert!(m.maps.iter().any(|x| x.slot == "roughness" && x.texture_id == rough_id));
+
+        // SWAP the roughness slot to a different texture.
+        let rough2 = write_png(root.path(), "Other_Roughness_2K.png");
+        let r2a = analyze(&rough2, &reg).unwrap();
+        let rough2_id = match import_texture(conn, &r2a, &opts(root.path())).unwrap() {
+            ImportOutcome::Imported { id, .. } => id,
+            ImportOutcome::DuplicatePath { id } => id,
+            ImportOutcome::Skipped { .. } => panic!("roughness2 skipped"),
+        };
+        set_material_map(conn, &mid, "roughness", Some(&rough2_id)).unwrap();
+        let m = get_material(conn, &mid).unwrap().unwrap();
+        assert_eq!(m.maps.len(), 3, "swap must not add a duplicate slot");
+        assert!(m.maps.iter().any(|x| x.slot == "roughness" && x.texture_id == rough2_id));
+
+        // REMOVE the base_color slot → drops PBR and the V-Ray/Arnold renderers.
+        set_material_map(conn, &mid, "base_color", None).unwrap();
+        let m = get_material(conn, &mid).unwrap().unwrap();
+        assert!(!m.is_pbr);
+        assert!(m.maps.iter().all(|x| x.slot != "base_color"));
+        assert!(m.renderers.contains(&"generic_pbr".to_string()));
+        assert!(!m.renderers.contains(&"vray".to_string()));
+        assert!(!m.renderers.contains(&"arnold".to_string()));
+
+        // Unknown material / texture ids are rejected, not silently ignored.
+        assert!(set_material_map(conn, "NX-MAT-NOPE", "ao", None).is_err());
+        assert!(set_material_map(conn, &mid, "ao", Some("NX-TEX-NOPE")).is_err());
     }
 
     #[test]

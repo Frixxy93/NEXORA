@@ -59,7 +59,14 @@ impl Database {
             tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
-        // Future: `if current < 3 { ... }` numbered migrations.
+        if current < 3 {
+            // Add the local `users` table backing the offline app lock (auth.rs).
+            let tx = conn.transaction()?;
+            tx.execute_batch(schema::MIGRATE_V3_USERS)?;
+            tx.pragma_update(None, "user_version", 3)?;
+            tx.commit()?;
+        }
+        // Future: `if current < 4 { ... }` numbered migrations.
         Ok(())
     }
 
@@ -97,12 +104,12 @@ mod tests {
                  ('assets','textures','materials','material_maps','texture_sets',
                   'texture_maps','udim_tiles','tags','asset_tags','collections',
                   'collection_assets','previews','file_hashes','usage_history',
-                  'settings','renderer_presets','material_versions')",
+                  'settings','renderer_presets','material_versions','users')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 17, "all core tables should be created");
+        assert_eq!(count, 18, "all core tables should be created");
     }
 
     #[test]

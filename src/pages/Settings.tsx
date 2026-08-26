@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, pickFolder, runningInTauri } from "../lib/api";
+import { useAuth } from "../components/AuthGate";
 import type { AppSettings, BridgeInfo, Renderer } from "../lib/types";
 import {
   checkForUpdate,
@@ -345,6 +346,26 @@ export function Settings() {
           <UpdatePanel />
         </div>
       </Section>
+
+      <Section title="Account" subtitle="Signed in with Google.">
+        <AccountPanel />
+      </Section>
+    </div>
+  );
+}
+
+// --- account panel ----------------------------------------------------------
+
+function AccountPanel() {
+  const { email, logout } = useAuth();
+  return (
+    <div className="flex items-center justify-between">
+      <div className="text-sm text-slate-200">
+        Signed in as <span className="font-medium text-white">{email ?? "—"}</span>
+      </div>
+      <button className="btn-ghost text-xs py-1 text-bad hover:text-bad" onClick={() => logout()}>
+        Log out
+      </button>
     </div>
   );
 }

@@ -32,6 +32,9 @@ tiny_http = "0.12"
 ureq = { version = "2", features = ["tls"] }
 # Unzip ambientCG material bundles (pure-Rust deflate; no C deps).
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Password hashing for the local app lock — Argon2id (memory-hard, salted PHC
+# strings). Pure Rust, no C deps; stays fully offline.
+argon2 = "0.5"
 
 [dev-dependencies]
 tempfile = "3"

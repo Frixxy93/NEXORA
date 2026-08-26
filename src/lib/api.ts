@@ -6,6 +6,7 @@
 
 import type {
   AppSettings,
+  AuthStatus,
   BridgeInfo,
   CatalogAsset,
   CollectionDto,
@@ -63,6 +64,19 @@ const defaultSettings = (): AppSettings => ({
 });
 
 let mockSettings = defaultSettings();
+
+// Cloud app-lock mock (browser preview only) — a fake in-memory "Firebase" so
+// the login/signup flow is demoable without the real backend. State persists for
+// the SPA session.
+const mockAuth: {
+  accounts: Map<string, string>; // email → password
+  authenticated: boolean;
+  email: string | null;
+} = { accounts: new Map(), authenticated: false, email: null };
+function mockAuthStatus(): AuthStatus {
+  return { authenticated: mockAuth.authenticated, email: mockAuth.email };
+}
+
 const mockTextures: TextureDto[] = [];
 const mockMaterials: MaterialDto[] = [];
 const doneListeners = new Set<(r: ImportReport) => void>();
@@ -216,6 +230,54 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
   switch (cmd) {
     case "core_version":
       return "0.1.0" as unknown as T;
+    case "auth_status":
+      return mockAuthStatus() as unknown as T;
+    case "auth_register": {
+      const email = String(args?.email ?? "").trim().toLowerCase();
+      const password = String(args?.password ?? "");
+      if (!email.includes("@")) throw new Error("That doesn't look like a valid email address.");
+      if (password.length < 6) throw new Error("Password should be at least 6 characters.");
+      if (mockAuth.accounts.has(email)) throw new Error("That email already has an account — try logging in.");
+      mockAuth.accounts.set(email, password);
+      mockAuth.authenticated = true;
+      mockAuth.email = email;
+      return mockAuthStatus() as unknown as T;
+    }
+    case "auth_login": {
+      const email = String(args?.email ?? "").trim().toLowerCase();
+      const password = String(args?.password ?? "");
+      if (mockAuth.accounts.get(email) !== password) {
+        throw new Error("Incorrect email or password.");
+      }
+      mockAuth.authenticated = true;
+      mockAuth.email = email;
+      return mockAuthStatus() as unknown as T;
+    }
+    case "auth_send_password_reset": {
+      const email = String(args?.email ?? "").trim();
+      if (!email.includes("@")) throw new Error("That doesn't look like a valid email address.");
+      // Always "succeeds" (doesn't reveal whether the email is registered).
+      return undefined as unknown as T;
+    }
+    case "auth_login_google": {
+      // Preview mock: pretend the Google browser flow succeeded.
+      mockAuth.authenticated = true;
+      mockAuth.email = mockAuth.email ?? "you@gmail.com";
+      return mockAuthStatus() as unknown as T;
+    }
+    case "auth_logout":
+      mockAuth.authenticated = false;
+      mockAuth.email = null;
+      return mockAuthStatus() as unknown as T;
+    case "auth_change_password": {
+      if (!mockAuth.authenticated || !mockAuth.email) throw new Error("You must be signed in to change your password.");
+      const current = String(args?.currentPassword ?? "");
+      const next = String(args?.newPassword ?? "");
+      if (mockAuth.accounts.get(mockAuth.email) !== current) throw new Error("Incorrect email or password.");
+      if (next.length < 6) throw new Error("Password should be at least 6 characters.");
+      mockAuth.accounts.set(mockAuth.email, next);
+      return undefined as unknown as T;
+    }
     case "recompute_metadata":
       return undefined as unknown as T;
     case "scan_library":
@@ -356,6 +418,36 @@ async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promi
       mockMaterials.unshift(mat);
       libraryChangeListeners.forEach((cb) => cb());
       return mat.id as unknown as T;
+    }
+    case "set_material_map": {
+      const mat = mockMaterials.find((m) => m.id === String(args?.materialId));
+      if (mat) {
+        const slot = String(args?.slot);
+        const tid = (args?.textureId as string | null) ?? null;
+        const maps = mat.maps.filter((m) => m.slot !== slot);
+        if (tid) {
+          const tex = mockTextures.find((t) => t.id === tid);
+          maps.push({ slot, texture_id: tid, name: tex?.name ?? tid });
+        }
+        // Recompute derived fields in place (preserve id/name/category/favorite).
+        const present = new Set(maps.map((m) => m.slot));
+        const presentExpected = EXPECTED_PBR.filter((s) => present.has(s)).length;
+        mat.maps = maps;
+        mat.is_pbr =
+          present.has("base_color") &&
+          present.has("normal") &&
+          (present.has("roughness") || present.has("metallic"));
+        mat.health = Math.round((presentExpected / EXPECTED_PBR.length) * 100);
+        mat.status = mat.health >= 100 ? "healthy" : mat.health === 0 ? "broken" : "incomplete";
+        mat.missing_maps = EXPECTED_PBR.filter((s) => !present.has(s));
+        mat.renderers = present.has("base_color")
+          ? ["arnold", "generic_pbr", "vray"]
+          : ["generic_pbr"];
+        mat.preview_texture_id =
+          maps.find((m) => m.slot === "base_color")?.texture_id ?? maps[0]?.texture_id ?? null;
+      }
+      fireLibraryChanged();
+      return undefined as unknown as T;
     }
     case "list_materials": {
       const cat = (args?.category as string | null) ?? null;
@@ -659,6 +751,21 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 // ===========================================================================
 export const api = {
   coreVersion: () => call<string>("core_version"),
+
+  // Cloud app lock (Firebase auth)
+  authStatus: () => call<AuthStatus>("auth_status"),
+  authRegister: (email: string, password: string) =>
+    call<AuthStatus>("auth_register", { email, password }),
+  authLogin: (email: string, password: string) =>
+    call<AuthStatus>("auth_login", { email, password }),
+  authLogout: () => call<AuthStatus>("auth_logout"),
+  authChangePassword: (currentPassword: string, newPassword: string) =>
+    call<void>("auth_change_password", { currentPassword, newPassword }),
+  authSendPasswordReset: (email: string) =>
+    call<void>("auth_send_password_reset", { email }),
+  /** Sign in with Google (opens the system browser for OAuth). */
+  authLoginGoogle: () => call<AuthStatus>("auth_login_google"),
+
   getSettings: () => call<AppSettings>("get_app_settings"),
   saveSettings: (settings: AppSettings) => call<void>("save_app_settings", { settings }),
   initLibrary: (path: string, managed: boolean) =>
@@ -692,6 +799,9 @@ export const api = {
   listMaterials: (category?: string | null) =>
     call<MaterialDto[]>("list_materials", { category: category ?? null }),
   getMaterial: (id: string) => call<MaterialDto | null>("get_material", { id }),
+  /** Add/swap (textureId set) or remove (textureId null) one slot of a material. */
+  setMaterialMap: (materialId: string, slot: string, textureId: string | null) =>
+    call<void>("set_material_map", { materialId, slot, textureId }),
 
   // Phase 5
   search: (query: string) => call<SearchResults>("search", { query }),

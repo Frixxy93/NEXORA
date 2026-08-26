@@ -123,6 +123,7 @@ pub fn run() {
                 discover_running: Arc::new(AtomicBool::new(false)),
                 discover_progress: Arc::new(Mutex::new(Default::default())),
                 scan_running,
+                auth: Arc::new(Mutex::new(state::AuthSession::default())),
             });
             Ok(())
         })
@@ -177,6 +178,7 @@ pub fn run() {
             commands::rename_asset,
             commands::set_asset_category,
             commands::set_texture_map_type,
+            commands::set_material_map,
             commands::set_favorite_many,
             commands::add_tag_many,
             commands::add_to_collection_many,
@@ -184,6 +186,13 @@ pub fn run() {
             commands::scan_library,
             commands::list_missing_files,
             commands::relink_texture,
+            commands::auth_status,
+            commands::auth_register,
+            commands::auth_login,
+            commands::auth_logout,
+            commands::auth_change_password,
+            commands::auth_send_password_reset,
+            commands::auth_login_google,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXORA");

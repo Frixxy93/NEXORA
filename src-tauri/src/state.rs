@@ -10,6 +10,20 @@ use std::sync::{Arc, Mutex};
 /// Shared, cloneable handle to the single database.
 pub type Db = Arc<Mutex<Database>>;
 
+/// In-memory login session for the cloud app lock (Firebase). Held only in RAM
+/// by the running app, so quitting NEXORA logs the user out and the next launch
+/// requires signing in again. Never persisted to disk.
+#[derive(Default)]
+pub struct AuthSession {
+    /// True once the user has signed in (or just registered).
+    pub authenticated: bool,
+    /// The signed-in email, for display and change-password.
+    pub email: Option<String>,
+    /// Firebase ID token from the last successful auth (used for token refresh /
+    /// authenticated calls; short-lived).
+    pub id_token: Option<String>,
+}
+
 /// App-wide state. The database sits behind `Arc<Mutex<…>>` so the background
 /// import thread and the localhost Bridge API server can share it with the
 /// foreground commands. The bridge outbox + Maya link are also shared so the
@@ -35,4 +49,6 @@ pub struct AppState {
     /// True while a library scan is running (guards overlapping scans from the
     /// manual "Scan now" and the auto-scan timer).
     pub scan_running: Arc<AtomicBool>,
+    /// The current app-lock login session (in memory only).
+    pub auth: Arc<Mutex<AuthSession>>,
 }

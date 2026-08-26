@@ -12,7 +12,9 @@
 //!                  for Phase 2 import; not yet wired to an importer).
 //! - [`models`]   — serde types shared with the frontend over IPC.
 
+pub mod auth;
 pub mod bridge;
+pub mod cloud_auth;
 pub mod db;
 pub mod ids;
 pub mod library;

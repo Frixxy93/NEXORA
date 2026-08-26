@@ -13,7 +13,7 @@
 //! existing DB is safe. Structural changes go through numbered migrations.
 
 /// Current schema version, stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The full v1 schema, applied inside a single transaction.
 pub const SCHEMA_V1: &str = r#"
@@ -224,4 +224,20 @@ INSERT OR IGNORE INTO renderer_presets (material_id, renderer, params)
 SELECT DISTINCT material_id, 'vray', NULL FROM material_maps WHERE slot = 'base_color';
 INSERT OR IGNORE INTO renderer_presets (material_id, renderer, params)
 SELECT DISTINCT material_id, 'arnold', NULL FROM material_maps WHERE slot = 'base_color';
+"#;
+
+/// v3 — local user accounts for the app lock (see auth.rs).
+///
+/// Credentials for NEXORA's offline login live entirely in the local DB. The
+/// password is never stored in plaintext: `password_hash` holds an Argon2id PHC
+/// string (algorithm, parameters, salt, and hash together). No server, no
+/// network — the whole auth system is self-contained on the user's machine.
+pub const MIGRATE_V3_USERS: &str = r#"
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,                    -- Argon2id PHC string
+    created_at    INTEGER NOT NULL,
+    last_login    INTEGER
+);
 "#;
